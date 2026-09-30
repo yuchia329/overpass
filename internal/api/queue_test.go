@@ -26,6 +26,40 @@ func TestQueuePageLoadsFromBackend(t *testing.T) {
 	}
 }
 
+// A proxy or browser must never pair a new index.html with an old queue.js.
+func TestQueuePageIsNeverServedStale(t *testing.T) {
+	h := newHarness(t)
+	get := func(path string) string {
+		t.Helper()
+		res, err := http.Get(h.url + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		body, _ := io.ReadAll(res.Body)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: status %d", path, res.StatusCode)
+		}
+		if got := res.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("GET %s: Cache-Control = %q, want no-cache", path, got)
+		}
+		return string(body)
+	}
+
+	page := get("/")
+	_, rest, ok := strings.Cut(page, `src="queue.js?v=`)
+	if !ok {
+		t.Fatalf("index.html does not load a versioned queue.js:\n%s", page)
+	}
+	version, _, _ := strings.Cut(rest, `"`)
+	if version == "" {
+		t.Fatal("queue.js version is empty")
+	}
+	if js := get("/queue.js?v=" + version); !strings.Contains(js, "/v1/queue") {
+		t.Error("versioned queue.js is not the Queue page script")
+	}
+}
+
 func TestQueueSocketRequiresASolanaWallet(t *testing.T) {
 	h := newHarness(t)
 

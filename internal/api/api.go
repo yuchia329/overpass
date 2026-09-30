@@ -2,7 +2,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -128,20 +130,55 @@ func New(cfg Config) (*Server, error) {
 }
 
 // routeQueuePage serves each Queue page file at its own path, index.html at
-// "/", so unknown API paths still 404.
+// "/", so unknown API paths still 404. Every file is sent with no-cache, and
+// index.html loads queue.js under a content version, so a proxy or browser
+// that cached an older copy cannot pair it with a newer page.
 func (s *Server) routeQueuePage() error {
 	files, err := fs.ReadDir(web.Queue, ".")
 	if err != nil {
 		return fmt.Errorf("queue page: %w", err)
 	}
+	index, err := versionedIndex()
+	if err != nil {
+		return fmt.Errorf("queue page: %w", err)
+	}
+	noCache := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache")
+			h(w, r)
+		}
+	}
+	s.mux.HandleFunc("GET /{$}", noCache(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(index)
+	}))
 	fileServer := http.FileServerFS(web.Queue)
-	s.mux.Handle("GET /{$}", fileServer)
 	for _, f := range files {
 		if f.Name() != "index.html" {
-			s.mux.Handle("GET /"+f.Name(), fileServer)
+			s.mux.HandleFunc("GET /"+f.Name(), noCache(fileServer.ServeHTTP))
 		}
 	}
 	return nil
+}
+
+// versionedIndex returns index.html with its queue.js reference carrying a
+// hash of queue.js.
+func versionedIndex() ([]byte, error) {
+	index, err := fs.ReadFile(web.Queue, "index.html")
+	if err != nil {
+		return nil, err
+	}
+	script, err := fs.ReadFile(web.Queue, "queue.js")
+	if err != nil {
+		return nil, err
+	}
+	const ref = `src="queue.js"`
+	if !bytes.Contains(index, []byte(ref)) {
+		return nil, fmt.Errorf("index.html has no %s", ref)
+	}
+	sum := sha256.Sum256(script)
+	versioned := fmt.Sprintf(`src="queue.js?v=%x"`, sum[:6])
+	return bytes.Replace(index, []byte(ref), []byte(versioned), 1), nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
