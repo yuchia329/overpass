@@ -7,7 +7,7 @@ Wants=network-online.target
 
 [Service]
 # Never add -dev here: the dev credit endpoint would let any Customer mint Balance.
-ExecStart=/usr/local/bin/overpass -addr 10.42.0.1:8080 -db /var/lib/overpass/overpass.db -claim-window 30s -solve-window 60s
+ExecStart=/usr/local/bin/overpass -addr 10.42.0.1:8080 -db /var/lib/overpass/overpass.db -claim-window 30s -solve-window 5m
 DynamicUser=yes
 StateDirectory=overpass
 Restart=always

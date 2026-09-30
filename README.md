@@ -222,7 +222,8 @@ OVERPASS_URL=https://overpass.yuchia.dev npm run demo:recaptcha
 ### 5. Solve from the phone or iPad
 
 Open `https://overpass.yuchia.dev`, connect with the Solver's wallet, and
-Claim the Task within 30s. There is no interstitial page, unlike ngrok.
+Claim the Task within 30s. The public backend gives the Solver 5 minutes to
+clear the Challenge. There is no interstitial page, unlike ngrok.
 
 ## Troubleshooting
 
