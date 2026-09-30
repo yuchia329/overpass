@@ -55,6 +55,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 		"task_id":       resume.TaskID,
 		"page_url":      resume.PageURL,
 		"solve_left_ms": time.Until(resume.SolveDeadline).Milliseconds(),
+		"ice_servers":   s.iceServers(),
 	}) {
 		return
 	}
@@ -77,6 +78,12 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 			if !writeMsg(ctx, conn, frameMessage(v)) {
 				return
 			}
+		case a := <-viewer.Answers:
+			if !writeMsg(ctx, conn, map[string]any{
+				"type": "rtc_answer", "task_id": a.TaskID, "sdp": a.SDP, "peer_token": a.PeerToken,
+			}) {
+				return
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -95,6 +102,7 @@ func (s *Server) readSolver(ctx context.Context, conn *websocket.Conn, wallet st
 			DX     float64 `json:"dx"`
 			DY     float64 `json:"dy"`
 			T      float64 `json:"t"`
+			SDP    string  `json:"sdp"`
 		}
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
 			return
@@ -105,6 +113,8 @@ func (s *Server) readSolver(ctx context.Context, conn *websocket.Conn, wallet st
 			reply = s.claim(ctx, msg.TaskID, wallet)
 		case "give_up":
 			reply = s.giveUp(ctx, msg.TaskID, wallet)
+		case "rtc_offer":
+			reply = s.offer(msg.TaskID, wallet, msg.SDP)
 		case "pointer", "wheel":
 			reply = s.input(msg.TaskID, wallet, session.Input{
 				Type: msg.Type, Action: msg.Action, X: msg.X, Y: msg.Y, DX: msg.DX, DY: msg.DY, T: msg.T,
@@ -141,6 +151,7 @@ func (s *Server) claim(ctx context.Context, taskID, wallet string) map[string]an
 		"task_id":         taskID,
 		"solve_deadline":  solveDeadline.UTC().Format(time.RFC3339Nano),
 		"solve_window_ms": s.cfg.SolveWindow.Milliseconds(),
+		"ice_servers":     s.iceServers(),
 	}
 }
 
@@ -175,6 +186,18 @@ func (s *Server) input(taskID, wallet string, in session.Input) map[string]any {
 	}
 	err := s.relay.Input(taskID, wallet, in)
 	if errors.Is(err, task.ErrNotYourClaim) {
+		return map[string]any{"type": "error", "task_id": taskID, "error": "not_your_claim"}
+	}
+	return nil // forwarded, or dropped because no Bridge is connected
+}
+
+// offer forwards the Solver's WebRTC offer to the Bridge. It replies only on
+// refusal; the Bridge's answer arrives as rtc_answer.
+func (s *Server) offer(taskID, wallet, sdp string) map[string]any {
+	if sdp == "" || len(sdp) > maxSDP {
+		return map[string]any{"type": "error", "task_id": taskID, "error": "invalid_offer"}
+	}
+	if errors.Is(s.relay.Offer(taskID, wallet, sdp), task.ErrNotYourClaim) {
 		return map[string]any{"type": "error", "task_id": taskID, "error": "not_your_claim"}
 	}
 	return nil // forwarded, or dropped because no Bridge is connected

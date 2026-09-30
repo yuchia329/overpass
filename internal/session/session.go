@@ -1,7 +1,8 @@
 // Package session is the Session relay: it pairs a Task's Bridge connection
 // with the connections of the Solver who claimed it, forwarding frames from
-// the Bridge to the Solver and input from the Solver to the Bridge. It does
-// not interpret frames.
+// the Bridge to the Solver and input from the Solver to the Bridge. It also
+// carries the WebRTC signaling that lets the two connect directly, after
+// which frames and input bypass it. It does not interpret frames or SDP.
 package session
 
 import (
@@ -9,11 +10,18 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/yuchia329/overpass/internal/secret"
 	"github.com/yuchia329/overpass/internal/task"
 )
 
-// bridgeBuffer is how many messages a Bridge may fall behind before it is dropped.
-const bridgeBuffer = 256
+const (
+	// bridgeBuffer is how many messages a Bridge may fall behind before it is dropped.
+	bridgeBuffer = 256
+	// answerBuffer is how many answers a Solver connection may fall behind
+	// before later ones are dropped. A dropped answer only keeps that Solver
+	// on the relay.
+	answerBuffer = 4
+)
 
 var (
 	ErrAlreadyJoined = errors.New("a bridge is already connected to this task")
@@ -33,12 +41,22 @@ type View struct {
 	Frame  Frame
 }
 
+// Answer is the Bridge's WebRTC answer to its Solver's offer, with the
+// credential the Solver's peer must present to the Bridge.
+type Answer struct {
+	TaskID    string
+	SDP       string
+	PeerToken string
+}
+
 // Viewer is one Solver connection's feed of the Session it holds the Claim
 // on. Only the latest View is kept: a Solver who falls behind skips frames.
 type Viewer struct {
-	Wallet string
-	C      <-chan View
-	c      chan View
+	Wallet  string
+	C       <-chan View
+	c       chan View
+	Answers <-chan Answer
+	answers chan Answer
 }
 
 // Relay holds the live Sessions. It is fed the Task lifecycle's Events.
@@ -51,7 +69,10 @@ type Relay struct {
 type session struct {
 	bridge *Bridge
 	solver string // the claimant's wallet, once claimed
-	ended  bool   // Solved, Expired or Failed
+	// peerToken is the credential, made at Claim, that the claimant's WebRTC
+	// peer presents to the Bridge.
+	peerToken string
+	ended     bool // Solved, Expired or Failed
 	url    string
 	frame  *Frame
 }
@@ -68,10 +89,15 @@ type Input struct {
 	T      float64
 }
 
-// ToBridge is one message for the Bridge. Exactly one field is set.
+// ToBridge is one message for the Bridge. Exactly one of Input, Offer and
+// Event is set.
 type ToBridge struct {
 	Input *Input
+	Offer string      // the claimant's WebRTC offer SDP
 	Event *task.Event // the Task was claimed or ended
+	// PeerToken comes with a Claimed Event: the credential the claimant's
+	// WebRTC peer must present.
+	PeerToken string
 }
 
 // Bridge is a Bridge connection's handle on its Task's Session.
@@ -113,6 +139,16 @@ func (r *Relay) LeaveBridge(b *Bridge) {
 // Solver holding the Task's Claim. Events reach the Bridge in the order they
 // were forwarded.
 func (r *Relay) Input(taskID, wallet string, in Input) error {
+	return r.fromSolver(taskID, wallet, ToBridge{Input: &in})
+}
+
+// Offer forwards a Solver's WebRTC offer to the Bridge, but only from the
+// Solver holding the Task's Claim.
+func (r *Relay) Offer(taskID, wallet, sdp string) error {
+	return r.fromSolver(taskID, wallet, ToBridge{Offer: sdp})
+}
+
+func (r *Relay) fromSolver(taskID, wallet string, m ToBridge) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.sessions[taskID]
@@ -122,8 +158,29 @@ func (r *Relay) Input(taskID, wallet string, in Input) error {
 	if s.ended || s.solver == "" || s.solver != wallet {
 		return task.ErrNotYourClaim
 	}
-	s.bridge.send(ToBridge{Input: &in})
+	s.bridge.send(m)
 	return nil
+}
+
+// Answer forwards the Bridge's WebRTC answer, with the Session's peer token,
+// to every connection of the claiming Solver while the Task is live.
+func (r *Relay) Answer(b *Bridge, sdp string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.sessions[b.TaskID]
+	if !ok || s.bridge != b || s.solver == "" || s.ended {
+		return
+	}
+	a := Answer{TaskID: b.TaskID, SDP: sdp, PeerToken: s.peerToken}
+	for v := range r.viewers {
+		if v.Wallet != s.solver {
+			continue
+		}
+		select {
+		case v.answers <- a:
+		default:
+		}
+	}
 }
 
 // Frame shows a new frame of the Agent's page to the claiming Solver.
@@ -150,8 +207,8 @@ func (r *Relay) update(b *Bridge, change func(*session)) {
 // Watch registers a Solver connection. If the Solver holds a live Claim, its
 // page is shown at once, so a reconnecting Solver picks up where they were.
 func (r *Relay) Watch(wallet string) *Viewer {
-	c := make(chan View, 1)
-	v := &Viewer{Wallet: wallet, C: c, c: c}
+	c, answers := make(chan View, 1), make(chan Answer, answerBuffer)
+	v := &Viewer{Wallet: wallet, C: c, c: c, Answers: answers, answers: answers}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.viewers[v] = struct{}{}
@@ -183,13 +240,20 @@ func (r *Relay) Publish(e task.Event) {
 	switch e.State {
 	case task.Claimed:
 		s.solver = e.SolverWallet
+		if s.peerToken == "" {
+			s.peerToken = secret.New("pt_")
+		}
 		r.show(e.TaskID, s)
 	case task.Solved, task.Expired, task.Failed:
 		s.ended = true
 	default:
 		return
 	}
-	s.bridge.send(ToBridge{Event: &e})
+	m := ToBridge{Event: &e}
+	if e.State == task.Claimed {
+		m.PeerToken = s.peerToken
+	}
+	s.bridge.send(m)
 }
 
 // send never blocks. Input events a Bridge is too slow for are dropped, so

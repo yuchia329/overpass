@@ -45,6 +45,11 @@ type Config struct {
 	RPCURL        string        // Solana JSON-RPC endpoint polled for Deposits; empty disables polling
 	PollInterval  time.Duration // how often to poll for Deposits
 	PingInterval  time.Duration // how often to ping Bridge and Queue sockets; zero disables
+	// STUNURLs and TURNURLs are handed to a Session's peers for a direct
+	// WebRTC connection. TURN needs TURNSecret, coturn's static-auth-secret.
+	STUNURLs   []string
+	TURNURLs   []string
+	TURNSecret string
 }
 
 // Server is the backend: an http.Handler plus the resources behind it.
@@ -71,6 +76,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("challenge TTL must be positive, got %v", c.ChallengeTTL)
 	case c.PingInterval < 0:
 		return fmt.Errorf("ping interval must not be negative, got %v", c.PingInterval)
+	case len(c.TURNURLs) > 0 && c.TURNSecret == "":
+		return errors.New("TURN servers need a TURN secret")
 	case c.RPCURL != "" && c.PollInterval <= 0:
 		return fmt.Errorf("poll interval must be positive, got %v", c.PollInterval)
 	}

@@ -23,7 +23,10 @@
   #demo-wallet { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 14px; color: var(--muted); }
   #demo-wallet code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--fg); user-select: all; -webkit-user-select: all; }
   #demo-wallet button { padding: 6px 12px; font-size: 14px; }
+  #direct-pref { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+  #direct-pref input { flex: none; margin: 3px 0 0; }
   #status { color: var(--muted); font-size: 14px; margin: 8px 0 16px; }
+  #link { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
   #notice { padding: 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 16px; }
   #claimed { padding: 12px; border: 2px solid var(--accent); border-radius: 6px; margin-bottom: 16px; }
   #claimed .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
@@ -46,6 +49,7 @@
     <button>Connect</button>
   </form>
   <p id="demo-wallet">Demo wallet: <code id="demo-wallet-address">C6YuPpdFMxCKxHkkcxtWGmq6okwtq6m1UMtwKGDXEHsm</code> <button type="button" id="copy-demo-wallet">Copy</button></p>
+  <label id="direct-pref"><input type="checkbox" id="direct" checked> Connect directly to the Agent when possible. It is faster, but the Agent sees your IP address.</label>
   <p id="status">Not connected.</p>
   <div id="notice" hidden></div>
   <section id="claimed" hidden>
@@ -54,6 +58,7 @@
       <span id="claimed-left"></span>
       <button class="secondary" id="give-up">Give up</button>
     </div>
+    <p id="link"></p>
     <p id="screen-wait">Waiting for the Agent's page…</p>
     <img id="screen" alt="The Agent's page" draggable="false" hidden>
   </section>

@@ -4,9 +4,14 @@
 // The Bridge only starts when the Agent calls solve(). It streams the page
 // with a CDP screencast and applies the Solver's input through Playwright's
 // mouse API, so every event is trusted; it never dispatches DOM events.
+// Frames and input go through the backend unless the Solver connects
+// directly over WebRTC; the backend socket stays open either way and carries
+// the Task's lifecycle.
 
 import type { CDPSession, Frame, Page } from "playwright";
 
+import type { Input } from "./input.ts";
+import { type IceServer, Peer, type ScreencastFrame } from "./peer.ts";
 import { type FrameMetadata, toViewport, wheelToViewport } from "./viewport.ts";
 
 /** Reports whether the Agent's page is unblocked. */
@@ -19,6 +24,12 @@ export interface SolveOptions {
   url?: string;
   /** Reports when the Challenge is cleared. Defaults to a reCAPTCHA check. */
   cleared?: ClearedCheck;
+  /**
+   * Lets the Solver connect directly over WebRTC, taking frames and input off
+   * the backend. The Solver and the Agent then see each other's IP address.
+   * Needs the optional werift dependency. Defaults to true.
+   */
+  p2p?: boolean;
 }
 
 export class OverpassError extends Error {
@@ -71,12 +82,10 @@ const FRAME_INTERVAL_MS = 100; // about 10 fps
 const JPEG_QUALITY = 60;
 const MAX_BUFFERED_BYTES = 1 << 20; // skip frames while the uplink is this far behind
 
-type Pointer = { type: "pointer"; action: "down" | "move" | "up"; x: number; y: number; t: number };
-type Wheel = { type: "wheel"; x: number; y: number; dx: number; dy: number; t: number };
 type Notice =
-  | Pointer
-  | Wheel
-  | { type: "claimed"; solve_deadline: string }
+  | Input
+  | { type: "claimed"; solve_deadline: string; peer_token?: string; ice_servers?: IceServer[] }
+  | { type: "rtc_offer"; sdp: string }
   | { type: "solved" }
   | { type: "expired" }
   | { type: "failed"; reason?: string };
@@ -96,6 +105,7 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
   const apiKey = options.apiKey ?? process.env.OVERPASS_API_KEY;
   if (!apiKey) throw new OverpassError("Overpass: no API key; pass apiKey or set OVERPASS_API_KEY.");
   const cleared = options.cleared ?? recaptchaCleared;
+  const p2p = options.p2p ?? true;
 
   const task = await createTask(base, apiKey, page.url());
   const cdp = await page.context().newCDPSession(page);
@@ -112,8 +122,47 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
   let inputs = Promise.resolve(); // input events apply one after another, in order
   let shown: FrameMetadata | undefined; // the latest frame sent, which the Solver's input refers to
   const replay = inputReplay(page);
+  const apply = (m: Input) => {
+    inputs = inputs.then(() => replay(shown, m)).catch((err) => console.warn("Overpass: input:", err));
+  };
+  let claim: { peerToken: string; iceServers: IceServer[] } | undefined;
+  let offered: Peer | undefined; // the newest peer, answered but maybe not ready
+  let peer: Peer | undefined; // the Solver's direct connection, once it presented the peer token
   const onNavigated = (frame: Frame) => {
-    if (frame === page.mainFrame()) send({ type: "url", url: frame.url() });
+    if (frame !== page.mainFrame()) return;
+    send({ type: "url", url: frame.url() });
+    peer?.sendURL(frame.url());
+  };
+  // Frames go to the direct peer while it is up, otherwise to the backend.
+  const socketOut: FrameOut = {
+    busy: () => socket.bufferedAmount >= MAX_BUFFERED_BYTES,
+    send: (f) => socket.send(JSON.stringify({ type: "frame", ...f })),
+  };
+  const frameOut = (): FrameOut | undefined => {
+    if (peer) return { busy: () => peer!.busy(MAX_BUFFERED_BYTES), send: (f) => peer!.sendFrame(f) };
+    return socket.readyState === WebSocket.OPEN ? socketOut : undefined;
+  };
+  const screencast = screencaster(cdp, frameOut, (md) => (shown = md));
+  // A new offer replaces any earlier peer: the Solver reloaded or retried.
+  const answerOffer = (sdp: string) => {
+    if (!claim) return;
+    offered?.close();
+    const p: Peer = new Peer(claim.peerToken, claim.iceServers, {
+      onReady: () => {
+        if (offered !== p) return p.close();
+        peer = p;
+        p.sendURL(page.url());
+        screencast.resend(); // the page may be still: show the Solver a frame now
+      },
+      onInput: apply,
+      onClose: () => {
+        if (peer !== p) return;
+        peer = undefined;
+        screencast.resend();
+      },
+    });
+    offered = p;
+    void p.answer(sdp).then((answer) => answer && send({ type: "rtc_answer", sdp: answer }));
   };
 
   try {
@@ -121,7 +170,7 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
       socket.onopen = () => {
         send({ type: "url", url: page.url() });
         page.on("framenavigated", onNavigated);
-        startScreencast(cdp, socket, (md) => (shown = md)).catch(reject);
+        screencast.start().catch(reject);
       };
       socket.onerror = () => {}; // onclose follows and settles
       // Overpass Fails a claimed Task whose Bridge disconnects.
@@ -131,9 +180,13 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
         switch (m.type) {
           case "pointer":
           case "wheel":
-            inputs = inputs.then(() => replay(shown, m)).catch((err) => console.warn("Overpass: input:", err));
+            apply(m);
+            break;
+          case "rtc_offer":
+            if (p2p) answerOffer(m.sdp);
             break;
           case "claimed":
+            if (m.peer_token) claim = { peerToken: m.peer_token, iceServers: m.ice_servers ?? [] };
             poll ??= pollCleared(page, cleared, () => {
               clearInterval(poll);
               send({ type: "solved" });
@@ -153,6 +206,9 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
     });
   } finally {
     clearInterval(poll);
+    // The Session ends with the Task: the direct connection goes too.
+    offered?.close();
+    peer?.close();
     page.off("framenavigated", onNavigated);
     socket.onclose = null;
     socket.close();
@@ -177,34 +233,50 @@ async function createTask(base: string, apiKey: string, pageURL: string) {
   return body as { task_id: string; session_token: string };
 }
 
+/** Where frames go: the backend socket or a direct peer. */
+type FrameOut = { busy(): boolean; send(frame: ScreencastFrame & { metadata: FrameMetadata }): void };
+
 // Chrome discards repaints while its frames wait for an ack and does not
 // resend them once the page is still, so a late ack would leave the Solver
 // looking at a stale frame. Every frame is acked at once instead, and only the
 // latest is sent, at most every FRAME_INTERVAL_MS and never while the uplink
-// is behind.
-async function startScreencast(cdp: CDPSession, socket: WebSocket, onSent: (md: FrameMetadata) => void) {
-  let latest: { data: string; metadata: FrameMetadata } | undefined; // the newest frame not yet sent
+// is behind. resend sends the last frame again, for when frames switch
+// between the backend and a direct peer.
+function screencaster(cdp: CDPSession, out: () => FrameOut | undefined, onSent: (md: FrameMetadata) => void) {
+  type Shot = { data: string; metadata: FrameMetadata };
+  let latest: Shot | undefined; // the newest frame not yet sent
+  let sent: Shot | undefined;
   let lastSent = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const flush = () => {
     timer = undefined;
-    if (latest === undefined || socket.readyState !== WebSocket.OPEN) return;
+    const to = out();
+    if (latest === undefined || to === undefined) return;
     const wait = lastSent + FRAME_INTERVAL_MS - Date.now();
-    if (wait > 0 || socket.bufferedAmount >= MAX_BUFFERED_BYTES) {
+    if (wait > 0 || to.busy()) {
       timer = setTimeout(flush, Math.max(wait, FRAME_INTERVAL_MS / 4));
       return;
     }
-    socket.send(JSON.stringify({ type: "frame", ...latest }));
+    to.send(latest);
     onSent(latest.metadata);
+    sent = latest;
     latest = undefined;
     lastSent = Date.now();
   };
-  cdp.on("Page.screencastFrame", ({ data, metadata, sessionId }) => {
-    cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
-    latest = { data, metadata };
-    if (timer === undefined) flush();
-  });
-  await cdp.send("Page.startScreencast", { format: "jpeg", quality: JPEG_QUALITY });
+  return {
+    async start() {
+      cdp.on("Page.screencastFrame", ({ data, metadata, sessionId }) => {
+        cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
+        latest = { data, metadata };
+        if (timer === undefined) flush();
+      });
+      await cdp.send("Page.startScreencast", { format: "jpeg", quality: JPEG_QUALITY });
+    },
+    resend() {
+      latest ??= sent;
+      if (timer === undefined) flush();
+    },
+  };
 }
 
 // Playwright's mouse goes through CDP input dispatch, so events are trusted
@@ -214,7 +286,7 @@ async function startScreencast(cdp: CDPSession, socket: WebSocket, onSent: (md: 
 // held releases it first rather than leaving it stuck.
 function inputReplay(page: Page) {
   let pressed = false;
-  return async (shown: FrameMetadata | undefined, m: Pointer | Wheel) => {
+  return async (shown: FrameMetadata | undefined, m: Input) => {
     const md = shown ?? (await viewportMetadata(page));
     const at = toViewport(md, m.x, m.y);
     await page.mouse.move(at.x, at.y);

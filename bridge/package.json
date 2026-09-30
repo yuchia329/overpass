@@ -20,5 +20,8 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "ws": "^8.22.0"
+  },
+  "optionalDependencies": {
+    "werift": "^0.24.4"
   }
 }

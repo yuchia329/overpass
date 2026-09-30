@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 
 	"github.com/yuchia329/overpass/internal/session"
 	"github.com/yuchia329/overpass/internal/task"
@@ -73,7 +72,7 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 				conn.Close(websocket.StatusPolicyViolation, "too slow")
 				return
 			}
-			if !writeMsg(ctx, conn, bridgeMessage(m)) {
+			if !writeMsg(ctx, conn, s.bridgeMessage(m)) {
 				return
 			}
 		case <-ctx.Done():
@@ -82,7 +81,10 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func bridgeMessage(m session.ToBridge) map[string]any {
+func (s *Server) bridgeMessage(m session.ToBridge) map[string]any {
+	if m.Offer != "" {
+		return map[string]any{"type": "rtc_offer", "sdp": m.Offer}
+	}
 	if in := m.Input; in != nil {
 		if in.Type == "wheel" {
 			return map[string]any{"type": "wheel", "x": in.X, "y": in.Y, "dx": in.DX, "dy": in.DY, "t": in.T}
@@ -94,29 +96,52 @@ func bridgeMessage(m session.ToBridge) map[string]any {
 	switch e.State {
 	case task.Claimed:
 		out["solve_deadline"] = e.SolveDeadline.UTC().Format(time.RFC3339Nano)
+		out["peer_token"] = m.PeerToken
+		out["ice_servers"] = s.iceServers()
 	case task.Failed:
 		out["reason"] = e.Reason
 	}
 	return out
 }
 
-// readBridge handles what the Bridge sends until the socket closes.
+// readBridge handles what the Bridge sends until the socket closes, then
+// logs how much frame data the Bridge sent through the backend: a Session's
+// relay bandwidth, which drops to almost nothing once its peers connect
+// directly.
 func (s *Server) readBridge(ctx context.Context, conn *websocket.Conn, b *session.Bridge) {
+	start := time.Now()
+	var frames, frameBytes int
+	defer func() {
+		secs := time.Since(start).Seconds()
+		log.Printf("session %s: bridge sent %d frames, %d KB in %.0fs (%.1f KB/s)",
+			b.TaskID, frames, frameBytes>>10, secs, float64(frameBytes)/1024/secs)
+	}()
 	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
 		var msg struct {
 			Type     string          `json:"type"`
 			Data     string          `json:"data"`
 			Metadata json.RawMessage `json:"metadata"`
 			URL      string          `json:"url"`
+			SDP      string          `json:"sdp"`
 		}
-		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+		if json.Unmarshal(data, &msg) != nil {
 			return
 		}
 		switch msg.Type {
 		case "frame":
+			frames++
+			frameBytes += len(data)
 			s.relay.Frame(b, session.Frame{Data: msg.Data, Metadata: msg.Metadata})
 		case "url":
 			s.relay.URL(b, msg.URL)
+		case "rtc_answer":
+			if len(msg.SDP) <= maxSDP {
+				s.relay.Answer(b, msg.SDP)
+			}
 		case "solved":
 			// The outcome reaches the Bridge as an Event. A Solved report on a
 			// Task that already ended is a no-op: the first outcome is final.

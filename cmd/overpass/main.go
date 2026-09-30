@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,7 +29,11 @@ func main() {
 	flag.StringVar(&cfg.RPCURL, "rpc-url", "https://api.mainnet-beta.solana.com", "Solana JSON-RPC endpoint polled for Deposits (empty disables polling)")
 	flag.DurationVar(&cfg.PollInterval, "poll-interval", 5*time.Second, "how often to poll for Deposits")
 	flag.DurationVar(&cfg.PingInterval, "ping-interval", 20*time.Second, "how often to ping Bridge and Queue sockets so proxies keep them open (0 disables)")
+	stun := flag.String("stun", "stun:stun.l.google.com:19302", "comma-separated STUN URLs for direct Bridge-to-Solver connections (empty for none)")
+	turn := flag.String("turn", "", "comma-separated TURN URLs, e.g. turn:host:3478; needs $OVERPASS_TURN_SECRET, coturn's static-auth-secret")
 	flag.Parse()
+	cfg.STUNURLs, cfg.TURNURLs = urlList(*stun), urlList(*turn)
+	cfg.TURNSecret = os.Getenv("OVERPASS_TURN_SECRET")
 
 	srv, err := api.New(cfg)
 	if err != nil {
@@ -47,8 +52,8 @@ func main() {
 		_ = httpSrv.Shutdown(shutdown)
 	}()
 
-	log.Printf("overpass listening on %s (claim %v, solve %v, price %d, dev %v)",
-		*addr, cfg.ClaimWindow, cfg.SolveWindow, cfg.Price, cfg.DevMode)
+	log.Printf("overpass listening on %s (claim %v, solve %v, price %d, dev %v, stun %v, turn %v)",
+		*addr, cfg.ClaimWindow, cfg.SolveWindow, cfg.Price, cfg.DevMode, cfg.STUNURLs, cfg.TURNURLs)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
@@ -56,4 +61,15 @@ func main() {
 	if err := srv.Close(); err != nil {
 		log.Printf("close: %v", err)
 	}
+}
+
+// urlList splits a comma-separated flag value, dropping empty entries.
+func urlList(s string) []string {
+	var urls []string
+	for _, u := range strings.Split(s, ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	return urls
 }

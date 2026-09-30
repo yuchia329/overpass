@@ -6,9 +6,9 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
-import { WebSocketServer, type WebSocket } from "ws";
 
 import { solve, type SolveOptions } from "../src/index.ts";
+import { type Bridge, fakeOverpass } from "./fake-overpass.ts";
 
 const VIEWPORT = { width: 640, height: 480 };
 
@@ -116,71 +116,4 @@ async function open(path: string): Promise<Page> {
   const page = await browser.newPage({ viewport: VIEWPORT });
   await page.goto(`http://127.0.0.1:${port}${path}`); // waits for load, iframes included
   return page;
-}
-
-type Bridge = {
-  send(msg: object): void;
-  /** Resolves with the next message of type, or rejects after ms. */
-  next(type: string, ms: number): Promise<Record<string, unknown>>;
-  /** The newest message of type received so far and not taken by next. */
-  latest(type: string): Record<string, unknown> | undefined;
-};
-
-// fakeOverpass accepts one Task and hands the test its Bridge socket.
-async function fakeOverpass() {
-  const server = createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/v1/tasks") {
-      res.writeHead(201, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ task_id: "task-1", session_token: "token-1" }));
-      return;
-    }
-    res.writeHead(404).end();
-  });
-  const wss = new WebSocketServer({ server });
-  const bridge = new Promise<Bridge>((resolve) => {
-    wss.on("connection", (ws: WebSocket) => {
-      // Messages are kept until asked for, so none is lost to a race.
-      const received: Record<string, unknown>[] = [];
-      const waiting: { type: string; resolve: (m: Record<string, unknown>) => void }[] = [];
-      ws.on("message", (data) => {
-        const m = JSON.parse(String(data)) as Record<string, unknown>;
-        const i = waiting.findIndex((w) => w.type === m.type);
-        if (i >= 0) waiting.splice(i, 1)[0].resolve(m);
-        else received.push(m);
-      });
-      resolve({
-        send: (msg) => ws.send(JSON.stringify(msg)),
-        latest: (type) => received.findLast((m) => m.type === type),
-        next: (type, ms) => {
-          const i = received.findIndex((m) => m.type === type);
-          if (i >= 0) return Promise.resolve(received.splice(i, 1)[0]);
-          return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-              waiting.splice(waiting.indexOf(w), 1);
-              reject(new Error(`timed out waiting for ${type}`));
-            }, ms);
-            const w = {
-              type,
-              resolve: (m: Record<string, unknown>) => {
-                clearTimeout(timer);
-                resolve(m);
-              },
-            };
-            waiting.push(w);
-          });
-        },
-      });
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
-  return {
-    url: `http://127.0.0.1:${port}`,
-    bridge,
-    close: async () => {
-      for (const ws of wss.clients) ws.terminate();
-      wss.close();
-      await new Promise((resolve) => server.close(resolve));
-    },
-  };
 }
