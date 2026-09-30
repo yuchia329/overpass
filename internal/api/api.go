@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -15,9 +16,11 @@ import (
 
 	"github.com/yuchia329/overpass/internal/customer"
 	"github.com/yuchia329/overpass/internal/ledger"
+	"github.com/yuchia329/overpass/internal/queue"
 	"github.com/yuchia329/overpass/internal/solana"
 	"github.com/yuchia329/overpass/internal/store"
 	"github.com/yuchia329/overpass/internal/task"
+	"github.com/yuchia329/overpass/internal/web"
 )
 
 const (
@@ -42,6 +45,7 @@ type Server struct {
 	db        *sql.DB
 	customers *customer.Registry
 	tasks     *task.Lifecycle
+	queue     *queue.Hub
 	mux       *http.ServeMux
 }
 
@@ -67,6 +71,11 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := task.Migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	hub := queue.New()
 	s := &Server{
 		cfg:       cfg,
 		db:        db,
@@ -75,8 +84,9 @@ func New(cfg Config) (*Server, error) {
 			ClaimWindow: cfg.ClaimWindow,
 			SolveWindow: cfg.SolveWindow,
 			Price:       cfg.Price,
-		}),
-		mux: http.NewServeMux(),
+		}, hub.Publish),
+		queue: hub,
+		mux:   http.NewServeMux(),
 	}
 	if err := s.tasks.Resume(context.Background()); err != nil {
 		db.Close()
@@ -89,7 +99,29 @@ func New(cfg Config) (*Server, error) {
 	if cfg.DevMode {
 		s.mux.HandleFunc("POST /v1/dev/credit", s.auth(s.handleDevCredit))
 	}
+	s.mux.HandleFunc("GET /v1/queue", s.handleQueue)
+	if err := s.routeQueuePage(); err != nil {
+		s.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+// routeQueuePage serves each Queue page file at its own path, index.html at
+// "/", so unknown API paths still 404.
+func (s *Server) routeQueuePage() error {
+	files, err := fs.ReadDir(web.Queue, ".")
+	if err != nil {
+		return fmt.Errorf("queue page: %w", err)
+	}
+	fileServer := http.FileServerFS(web.Queue)
+	s.mux.Handle("GET /{$}", fileServer)
+	for _, f := range files {
+		if f.Name() != "index.html" {
+			s.mux.Handle("GET /"+f.Name(), fileServer)
+		}
+	}
+	return nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }

@@ -2,14 +2,19 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	"github.com/yuchia329/overpass/internal/api"
 	"github.com/yuchia329/overpass/internal/solana"
@@ -220,4 +225,108 @@ func (h *harness) eventually(within time.Duration, cond func() bool, msg string)
 func num(v any) int64 {
 	f, _ := v.(float64)
 	return int64(f)
+}
+
+// solver is a Solver's connection to the Queue socket.
+type solver struct {
+	t       *testing.T
+	wallet  string
+	conn    *websocket.Conn
+	msgs    chan map[string]any
+	backlog []map[string]any // received but not yet awaited
+}
+
+// connectSolver opens the Queue socket as a Solver with a fresh wallet.
+func (h *harness) connectSolver() *solver {
+	h.t.Helper()
+	return h.connectSolverAs(newWallet(h.t).address)
+}
+
+func (h *harness) connectSolverAs(wallet string) *solver {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(h.url, "http")+"/v1/queue?wallet="+wallet, nil)
+	if err != nil {
+		h.t.Fatalf("dial queue: %v", err)
+	}
+	s := &solver{t: h.t, wallet: wallet, conn: conn, msgs: make(chan map[string]any, 64)}
+	go func() {
+		defer close(s.msgs)
+		for {
+			var m map[string]any
+			if err := wsjson.Read(context.Background(), conn, &m); err != nil {
+				return
+			}
+			s.msgs <- m
+		}
+	}()
+	h.t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "") })
+	return s
+}
+
+func (s *solver) send(msg map[string]any) {
+	s.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := wsjson.Write(ctx, s.conn, msg); err != nil {
+		s.t.Fatalf("send %v: %v", msg, err)
+	}
+}
+
+// next waits for the next message of type typ for taskID.
+func (s *solver) next(typ, taskID string) map[string]any {
+	s.t.Helper()
+	m, ok := s.await(time.Second, func(m map[string]any) bool { return m["type"] == typ && m["task_id"] == taskID })
+	if !ok {
+		s.t.Fatalf("no %s message for task %s within 1s", typ, taskID)
+	}
+	return m
+}
+
+// never asserts no message of type typ for taskID arrives within d.
+func (s *solver) never(typ, taskID string, d time.Duration) {
+	s.t.Helper()
+	if m, ok := s.await(d, func(m map[string]any) bool { return m["type"] == typ && m["task_id"] == taskID }); ok {
+		s.t.Fatalf("unexpected %s message for task %s: %v", typ, taskID, m)
+	}
+}
+
+// claim sends a Claim and returns the reply: "claimed" or "claim_failed".
+func (s *solver) claim(taskID string) map[string]any {
+	s.t.Helper()
+	s.send(map[string]any{"type": "claim", "task_id": taskID})
+	m, ok := s.await(time.Second, func(m map[string]any) bool {
+		return (m["type"] == "claimed" || m["type"] == "claim_failed") && m["task_id"] == taskID
+	})
+	if !ok {
+		s.t.Fatalf("no claim reply for task %s within 1s", taskID)
+	}
+	return m
+}
+
+// await returns the first message, already received or arriving within d,
+// that matches. Messages it passes over stay available to later waits.
+func (s *solver) await(d time.Duration, match func(map[string]any) bool) (map[string]any, bool) {
+	for i, m := range s.backlog {
+		if match(m) {
+			s.backlog = append(s.backlog[:i], s.backlog[i+1:]...)
+			return m, true
+		}
+	}
+	timeout := time.After(d)
+	for {
+		select {
+		case m, ok := <-s.msgs:
+			if !ok {
+				return nil, false
+			}
+			if match(m) {
+				return m, true
+			}
+			s.backlog = append(s.backlog, m)
+		case <-timeout:
+			return nil, false
+		}
+	}
 }
