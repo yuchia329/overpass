@@ -20,7 +20,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "HTTP listen address")
 	flag.StringVar(&cfg.DBPath, "db", "overpass.db", "SQLite database path")
 	flag.DurationVar(&cfg.ClaimWindow, "claim-window", 60*time.Second, "how long a Task may wait in the Queue before it Expires (demo: 30s)")
-	flag.DurationVar(&cfg.SolveWindow, "solve-window", 120*time.Second, "how long a Solver has after Claim before the Task Fails (demo: 45s)")
+	flag.DurationVar(&cfg.SolveWindow, "solve-window", 120*time.Second, "how long a Solver has after Claim before the Task Fails (demo: 60s)")
 	flag.Int64Var(&cfg.Price, "price", 10_000, "USDC base units held per Task (10000 = 0.01 USDC)")
 	flag.StringVar(&cfg.ServiceWallet, "service-wallet", "CW82aTEMcqsqwLaxppzrpEnM41bC83R8JUXpZgYcrhGt", "Overpass service wallet public key")
 	flag.DurationVar(&cfg.ChallengeTTL, "challenge-ttl", 5*time.Minute, "how long a registration challenge can be signed")
