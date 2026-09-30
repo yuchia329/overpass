@@ -97,6 +97,8 @@ func (s *Server) claim(ctx context.Context, taskID, wallet string) map[string]an
 		return refused("expired")
 	case errors.Is(err, task.ErrUnknownTask):
 		return refused("unknown_task")
+	case errors.Is(err, task.ErrHoldingClaim):
+		return refused("holding_claim")
 	case err != nil:
 		log.Printf("claim %s: %v", taskID, err)
 		return refused("internal")

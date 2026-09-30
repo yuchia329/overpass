@@ -4,7 +4,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -129,20 +128,13 @@ func TestOnlyFirstOfConcurrentClaimsWins(t *testing.T) {
 		s.next("task_added", id)
 	}
 
-	replies := make(chan map[string]any, len(solvers))
-	var wg sync.WaitGroup
-	for _, s := range solvers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			replies <- s.claim(id)
-		}()
+	ids := make([]string, len(solvers))
+	for i := range ids {
+		ids[i] = id
 	}
-	wg.Wait()
-	close(replies)
 
 	won, lost := 0, 0
-	for r := range replies {
+	for _, r := range claimAll(t, solvers, ids) {
 		switch {
 		case r["type"] == "claimed":
 			won++
@@ -157,7 +149,7 @@ func TestOnlyFirstOfConcurrentClaimsWins(t *testing.T) {
 	}
 }
 
-func TestClaimingAnExpiredTaskFails(t *testing.T) {
+func TestClaimRefusesExpiredAndUnknownTasks(t *testing.T) {
 	h := newHarness(t)
 	key := h.register()
 	h.credit(key, 10_000)
@@ -174,14 +166,14 @@ func TestClaimingAnExpiredTaskFails(t *testing.T) {
 }
 
 func TestClaimStopsTheClaimWindow(t *testing.T) {
-	h := newHarness(t, func(c *api.Config) { c.SolveWindow = time.Hour })
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = 300*time.Millisecond, time.Hour })
 	key := h.register()
 	h.credit(key, 10_000)
 	s := h.connectSolver()
 	id := h.createTask(key).body["task_id"].(string)
-	s.claim(id)
+	s.mustClaim(id)
 
-	time.Sleep(200 * time.Millisecond) // past the 100ms claim window
+	time.Sleep(400 * time.Millisecond) // past the claim window
 
 	if got := h.taskState(key, id); got != "claimed" {
 		t.Errorf("state = %s, want claimed", got)
@@ -197,7 +189,7 @@ func TestClaimedTaskFailsAfterSolveWindowAndReleasesHold(t *testing.T) {
 	h.credit(key, 10_000)
 	s := h.connectSolver()
 	id := h.createTask(key).body["task_id"].(string)
-	s.claim(id)
+	s.mustClaim(id)
 
 	m := s.next("task_failed", id)
 
@@ -218,7 +210,7 @@ func TestGivingUpFailsTaskAndReleasesHold(t *testing.T) {
 	h.credit(key, 10_000)
 	s := h.connectSolver()
 	id := h.createTask(key).body["task_id"].(string)
-	s.claim(id)
+	s.mustClaim(id)
 
 	s.send(map[string]any{"type": "give_up", "task_id": id})
 
@@ -239,7 +231,7 @@ func TestOnlyTheClaimingSolverCanGiveUp(t *testing.T) {
 	h.credit(key, 10_000)
 	claimer, other := h.connectSolver(), h.connectSolver()
 	id := h.createTask(key).body["task_id"].(string)
-	claimer.claim(id)
+	claimer.mustClaim(id)
 
 	other.send(map[string]any{"type": "give_up", "task_id": id})
 
@@ -257,7 +249,7 @@ func TestFailedTaskIsNeverRequeued(t *testing.T) {
 	h.credit(key, 10_000)
 	claimer := h.connectSolver()
 	id := h.createTask(key).body["task_id"].(string)
-	claimer.claim(id)
+	claimer.mustClaim(id)
 	claimer.send(map[string]any{"type": "give_up", "task_id": id})
 	claimer.next("task_failed", id)
 
@@ -289,7 +281,7 @@ func TestClaimedTaskOverdueAcrossRestartFailsOnStartup(t *testing.T) {
 	key := h.register()
 	h.credit(key, 10_000)
 	id := h.createTask(key).body["task_id"].(string)
-	h.connectSolver().claim(id)
+	h.connectSolver().mustClaim(id)
 
 	h.restart() // stops the solve timer before it fires
 	if got := h.taskState(key, id); got != "claimed" {
@@ -301,5 +293,44 @@ func TestClaimedTaskOverdueAcrossRestartFailsOnStartup(t *testing.T) {
 	h.eventually(time.Second, func() bool { return h.taskState(key, id) == "failed" }, "task failed after restart")
 	if available, held := h.balance(key); available != 10_000 || held != 0 {
 		t.Errorf("balance = %d/%d, want 10000/0", available, held)
+	}
+}
+
+func TestSolverHoldsOneClaimUntilItsTaskEnds(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
+	key := h.register()
+	h.credit(key, 20_000)
+	s := h.connectSolver()
+	first := h.createTask(key).body["task_id"].(string)
+	second := h.createTask(key).body["task_id"].(string)
+	s.mustClaim(first)
+
+	if reply := s.claim(second); reply["type"] != "claim_failed" || reply["error"] != "holding_claim" {
+		t.Fatalf("second claim reply = %v, want claim_failed holding_claim", reply)
+	}
+	s.send(map[string]any{"type": "give_up", "task_id": first})
+	s.next("task_failed", first)
+
+	s.mustClaim(second)
+}
+
+func TestSolverOnTwoConnectionsWinsAtMostOneClaim(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
+	key := h.register()
+	h.credit(key, 20_000)
+	wallet := newWallet(t).address
+	a, b := h.connectSolverAs(wallet), h.connectSolverAs(wallet)
+	ids := []string{h.createTask(key).body["task_id"].(string), h.createTask(key).body["task_id"].(string)}
+
+	won := 0
+	for _, r := range claimAll(t, []*solver{a, b}, ids) {
+		if r["type"] == "claimed" {
+			won++
+		} else if r["error"] != "holding_claim" {
+			t.Errorf("unexpected reply %v", r)
+		}
+	}
+	if won != 1 {
+		t.Errorf("won = %d, want 1", won)
 	}
 }

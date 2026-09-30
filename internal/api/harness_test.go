@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -296,6 +297,11 @@ func (s *solver) never(typ, taskID string, d time.Duration) {
 func (s *solver) claim(taskID string) map[string]any {
 	s.t.Helper()
 	s.send(map[string]any{"type": "claim", "task_id": taskID})
+	return s.claimReply(taskID)
+}
+
+func (s *solver) claimReply(taskID string) map[string]any {
+	s.t.Helper()
 	m, ok := s.await(time.Second, func(m map[string]any) bool {
 		return (m["type"] == "claimed" || m["type"] == "claim_failed") && m["task_id"] == taskID
 	})
@@ -303,6 +309,43 @@ func (s *solver) claim(taskID string) map[string]any {
 		s.t.Fatalf("no claim reply for task %s within 1s", taskID)
 	}
 	return m
+}
+
+// claimAll sends solvers[i]'s Claim on taskIDs[i] all at once and returns
+// the replies in the same order.
+func claimAll(t *testing.T, solvers []*solver, taskIDs []string) []map[string]any {
+	t.Helper()
+	errs := make(chan error, len(solvers))
+	var wg sync.WaitGroup
+	for i, s := range solvers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			errs <- wsjson.Write(ctx, s.conn, map[string]any{"type": "claim", "task_id": taskIDs[i]})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("send claim: %v", err)
+		}
+	}
+	replies := make([]map[string]any, len(solvers))
+	for i, s := range solvers {
+		replies[i] = s.claimReply(taskIDs[i])
+	}
+	return replies
+}
+
+// mustClaim claims taskID and fails the test unless the Claim wins.
+func (s *solver) mustClaim(taskID string) {
+	s.t.Helper()
+	if reply := s.claim(taskID); reply["type"] != "claimed" {
+		s.t.Fatalf("claim %s: reply %v, want claimed", taskID, reply)
+	}
 }
 
 // await returns the first message, already received or arriving within d,

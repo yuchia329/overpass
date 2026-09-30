@@ -100,6 +100,7 @@ var (
 	ErrExpired        = errors.New("task expired")
 	ErrAlreadyClaimed = errors.New("task already claimed")
 	ErrNotYourClaim   = errors.New("task is not claimed by this solver")
+	ErrHoldingClaim   = errors.New("solver already holds a claim")
 )
 
 // Created is what the Agent gets back from creating a Task.
@@ -160,7 +161,8 @@ func (l *Lifecycle) Create(ctx context.Context, customerID, pageURL string) (Cre
 
 // Claim gives a Pending Task to the Solver with wallet and starts its solve
 // window. Only the first Claim succeeds; a Task is never requeued, so any
-// later Claim returns ErrAlreadyClaimed.
+// later Claim returns ErrAlreadyClaimed. A Solver holds at most one Claim at
+// a time: until their claimed Task ends, Claim returns ErrHoldingClaim.
 func (l *Lifecycle) Claim(ctx context.Context, id, wallet string) (solveDeadline time.Time, err error) {
 	won, err := l.commit(ctx, func(tx *sql.Tx) (*Event, error) {
 		// Measured from the moment the Claim is recorded.
@@ -170,12 +172,13 @@ func (l *Lifecycle) Claim(ctx context.Context, id, wallet string) (solveDeadline
 		var created int64
 		// The claim deadline is checked here too, in case the Expire timer runs late.
 		err := tx.QueryRowContext(ctx,
-			`UPDATE tasks SET state = ?, solver_wallet = ?, solve_deadline = ?
-			 WHERE id = ? AND state = ? AND claim_deadline > ?
+			`UPDATE tasks SET state = ?1, solver_wallet = ?2, solve_deadline = ?3
+			 WHERE id = ?4 AND state = ?5 AND claim_deadline > ?6
+			   AND NOT EXISTS (SELECT 1 FROM tasks WHERE solver_wallet = ?2 AND state = ?1)
 			 RETURNING page_url, created_at`,
 			Claimed, wallet, solveDeadline.UnixMilli(), id, Pending, now.UnixMilli()).Scan(&e.PageURL, &created)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, claimRefusal(ctx, tx, id)
+			return nil, claimRefusal(ctx, tx, id, now)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("claim: %w", err)
@@ -190,19 +193,24 @@ func (l *Lifecycle) Claim(ctx context.Context, id, wallet string) (solveDeadline
 	return solveDeadline, nil
 }
 
-// claimRefusal explains why a Task could not be claimed.
-func claimRefusal(ctx context.Context, tx *sql.Tx, id string) error {
+// claimRefusal explains why a Task could not be claimed at now.
+func claimRefusal(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
 	var state State
-	err := tx.QueryRowContext(ctx, `SELECT state FROM tasks WHERE id = ?`, id).Scan(&state)
+	var claimDeadline int64
+	err := tx.QueryRowContext(ctx, `SELECT state, claim_deadline FROM tasks WHERE id = ?`, id).Scan(&state, &claimDeadline)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return ErrUnknownTask
 	case err != nil:
 		return fmt.Errorf("claim: %w", err)
-	case state == Expired, state == Pending: // Pending: past its claim deadline, about to Expire
+	case state == Expired:
+		return ErrExpired
+	case state != Pending:
+		return ErrAlreadyClaimed
+	case claimDeadline <= now.UnixMilli(): // about to Expire
 		return ErrExpired
 	}
-	return ErrAlreadyClaimed
+	return ErrHoldingClaim // the Task is claimable, but the Solver is busy
 }
 
 // failOverdue Fails a claimed Task whose solve window has passed.

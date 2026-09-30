@@ -63,7 +63,11 @@ function handle(m) {
       break;
     case "claim_failed":
       claiming.delete(m.task_id);
-      notice(m.error === "already_claimed" ? "Already claimed by another Solver." : `Claim failed: ${m.error}.`);
+      notice({
+        already_claimed: "Already claimed by another Solver.",
+        expired: "That Task has Expired.",
+        holding_claim: "Finish or give up your current Task first.",
+      }[m.error] || `Claim failed: ${m.error}.`);
       break;
     case "task_failed":
       if (claim && claim.id === m.task_id) claim = null;
