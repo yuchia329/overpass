@@ -3,6 +3,7 @@ module github.com/yuchia329/overpass
 go 1.26.3
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/coder/websocket v1.8.15
 	modernc.org/sqlite v1.60.1
 )

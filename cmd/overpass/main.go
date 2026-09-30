@@ -25,6 +25,8 @@ func main() {
 	flag.StringVar(&cfg.ServiceWallet, "service-wallet", "CW82aTEMcqsqwLaxppzrpEnM41bC83R8JUXpZgYcrhGt", "Overpass service wallet public key")
 	flag.DurationVar(&cfg.ChallengeTTL, "challenge-ttl", 5*time.Minute, "how long a registration challenge can be signed")
 	flag.BoolVar(&cfg.DevMode, "dev", false, "enable the dev credit endpoint (POST /v1/dev/credit)")
+	flag.StringVar(&cfg.RPCURL, "rpc-url", "https://api.mainnet-beta.solana.com", "Solana JSON-RPC endpoint polled for Deposits (empty disables polling)")
+	flag.DurationVar(&cfg.PollInterval, "poll-interval", 5*time.Second, "how often to poll for Deposits")
 	flag.Parse()
 
 	srv, err := api.New(cfg)

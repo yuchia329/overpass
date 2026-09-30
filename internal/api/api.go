@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yuchia329/overpass/internal/customer"
+	"github.com/yuchia329/overpass/internal/deposit"
 	"github.com/yuchia329/overpass/internal/ledger"
 	"github.com/yuchia329/overpass/internal/queue"
 	"github.com/yuchia329/overpass/internal/solana"
@@ -24,8 +25,9 @@ import (
 )
 
 const (
-	recentTasksLimit = 20
-	maxBodyBytes     = 64 << 10
+	recentTasksLimit    = 20
+	recentDepositsLimit = 20
+	maxBodyBytes        = 64 << 10
 )
 
 // Config holds the settings chosen by whoever runs the backend.
@@ -37,6 +39,8 @@ type Config struct {
 	ServiceWallet string
 	DevMode       bool          // enables the dev credit endpoint
 	ChallengeTTL  time.Duration // how long a registration challenge can be signed
+	RPCURL        string        // Solana JSON-RPC endpoint polled for Deposits; empty disables polling
+	PollInterval  time.Duration // how often to poll for Deposits
 }
 
 // Server is the backend: an http.Handler plus the resources behind it.
@@ -46,6 +50,7 @@ type Server struct {
 	customers *customer.Registry
 	tasks     *task.Lifecycle
 	queue     *queue.Hub
+	deposits  *deposit.Poller
 	mux       *http.ServeMux
 }
 
@@ -59,6 +64,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("service wallet %q is not a Solana public key", c.ServiceWallet)
 	case c.ChallengeTTL <= 0:
 		return fmt.Errorf("challenge TTL must be positive, got %v", c.ChallengeTTL)
+	case c.RPCURL != "" && c.PollInterval <= 0:
+		return fmt.Errorf("poll interval must be positive, got %v", c.PollInterval)
 	}
 	return nil
 }
@@ -67,7 +74,7 @@ func New(cfg Config) (*Server, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	db, err := store.Open(cfg.DBPath, customer.Schema, ledger.Schema, task.Schema)
+	db, err := store.Open(cfg.DBPath, customer.Schema, ledger.Schema, task.Schema, deposit.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +87,7 @@ func New(cfg Config) (*Server, error) {
 		cfg:       cfg,
 		db:        db,
 		customers: customer.New(db, cfg.ChallengeTTL),
+		deposits:  deposit.New(db, deposit.Config{RPCURL: cfg.RPCURL, ServiceWallet: cfg.ServiceWallet, PollInterval: cfg.PollInterval}),
 		tasks: task.New(db, task.Config{
 			ClaimWindow: cfg.ClaimWindow,
 			SolveWindow: cfg.SolveWindow,
@@ -92,6 +100,7 @@ func New(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	s.deposits.Start()
 	s.mux.HandleFunc("POST /v1/customers/challenge", s.handleChallenge)
 	s.mux.HandleFunc("POST /v1/customers", s.handleRegister)
 	s.mux.HandleFunc("GET /v1/balance", s.auth(s.handleBalance))
@@ -127,6 +136,7 @@ func (s *Server) routeQueuePage() error {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
 
 func (s *Server) Close() error {
+	s.deposits.Close()
 	s.tasks.Close()
 	return s.db.Close()
 }
@@ -166,6 +176,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reg, err := s.customers.Register(r.Context(), req.Wallet, req.Nonce, req.Signature)
+	if err == nil {
+		// If this fails the caller gets a 500 and registers again, which
+		// rotates the key and retries the attribution.
+		err = deposit.Attribute(r.Context(), s.db, reg.CustomerID, req.Wallet)
+	}
 	switch {
 	case errors.Is(err, customer.ErrInvalidWallet):
 		writeError(w, http.StatusBadRequest, "invalid_wallet")
@@ -225,7 +240,22 @@ func (s *Server) handleBalance(w http.ResponseWriter, r *http.Request, customerI
 			"created_at": t.CreatedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"available": b.Available, "held": b.Held, "tasks": tasks})
+	recentDeposits, err := deposit.Recent(r.Context(), s.db, customerID, recentDepositsLimit)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	deposits := make([]map[string]any, 0, len(recentDeposits))
+	for _, d := range recentDeposits {
+		deposits = append(deposits, map[string]any{
+			"signature":  d.Signature,
+			"amount":     d.Amount,
+			"created_at": d.CreatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available": b.Available, "held": b.Held, "tasks": tasks, "deposits": deposits,
+	})
 }
 
 // handleDevCredit stands in for Deposits; it is only routed in dev mode.
