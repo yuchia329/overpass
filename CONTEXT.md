@@ -49,7 +49,7 @@ The obstacle blocking an Agent's page that needs a human (reCAPTCHA, slider puzz
 _Avoid_: captcha (too narrow), blocker
 
 **Session**:
-The live remote control of one Agent's browser by the Solver who claimed its Task: the Solver sees the page and sends pointer input.
+The live remote control of one Agent's browser by the Solver who claimed its Task: the Solver sees the page and sends pointer and wheel input.
 _Avoid_: remote desktop, connection, stream
 
 **Task**:

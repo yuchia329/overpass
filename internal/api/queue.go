@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"time"
 
@@ -42,6 +43,20 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	defer s.queue.Unsubscribe(sub)
 	viewer := s.relay.Watch(wallet)
 	defer s.relay.Unwatch(viewer)
+	// A Solver reconnecting mid-Session resumes it. The Claim is looked up
+	// after subscribing, so if the Task ends meanwhile its outcome follows.
+	resume, ok, err := s.tasks.ClaimOf(ctx, wallet)
+	if err != nil {
+		log.Printf("claim of %s: %v", wallet, err)
+	}
+	if ok && !writeMsg(ctx, conn, map[string]any{
+		"type":          "claimed",
+		"task_id":       resume.TaskID,
+		"page_url":      resume.PageURL,
+		"solve_left_ms": time.Until(resume.SolveDeadline).Milliseconds(),
+	}) {
+		return
+	}
 	for _, t := range snapshot {
 		if !writeMsg(ctx, conn, taskAdded(t)) {
 			return
@@ -76,6 +91,8 @@ func (s *Server) readSolver(ctx context.Context, conn *websocket.Conn, wallet st
 			Action string  `json:"action"`
 			X      float64 `json:"x"`
 			Y      float64 `json:"y"`
+			DX     float64 `json:"dx"`
+			DY     float64 `json:"dy"`
 			T      float64 `json:"t"`
 		}
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
@@ -87,8 +104,10 @@ func (s *Server) readSolver(ctx context.Context, conn *websocket.Conn, wallet st
 			reply = s.claim(ctx, msg.TaskID, wallet)
 		case "give_up":
 			reply = s.giveUp(ctx, msg.TaskID, wallet)
-		case "pointer":
-			reply = s.input(msg.TaskID, wallet, session.Pointer{Action: msg.Action, X: msg.X, Y: msg.Y, T: msg.T})
+		case "pointer", "wheel":
+			reply = s.input(msg.TaskID, wallet, session.Input{
+				Type: msg.Type, Action: msg.Action, X: msg.X, Y: msg.Y, DX: msg.DX, DY: msg.DY, T: msg.T,
+			})
 		default:
 			reply = map[string]any{"type": "error", "error": "unknown_type"}
 		}
@@ -137,13 +156,23 @@ func (s *Server) giveUp(ctx context.Context, taskID, wallet string) map[string]a
 	return nil
 }
 
-// input forwards a pointer event to the Bridge. It replies only on refusal.
-func (s *Server) input(taskID, wallet string, p session.Pointer) map[string]any {
-	inViewport := func(v float64) bool { return v >= 0 && v <= 1 }
-	if (p.Action != "down" && p.Action != "move" && p.Action != "up") || !inViewport(p.X) || !inViewport(p.Y) {
+// maxWheel bounds one wheel event's scroll, in frame widths or heights.
+const maxWheel = 10
+
+// input forwards a pointer or wheel event to the Bridge. It replies only on refusal.
+func (s *Server) input(taskID, wallet string, in session.Input) map[string]any {
+	inFrame := func(v float64) bool { return v >= 0 && v <= 1 }
+	valid := inFrame(in.X) && inFrame(in.Y)
+	switch in.Type {
+	case "pointer":
+		valid = valid && (in.Action == "down" || in.Action == "move" || in.Action == "up")
+	case "wheel":
+		valid = valid && math.Abs(in.DX) <= maxWheel && math.Abs(in.DY) <= maxWheel
+	}
+	if !valid {
 		return map[string]any{"type": "error", "task_id": taskID, "error": "invalid_input"}
 	}
-	err := s.relay.Input(taskID, wallet, p)
+	err := s.relay.Input(taskID, wallet, in)
 	if errors.Is(err, task.ErrNotYourClaim) {
 		return map[string]any{"type": "error", "task_id": taskID, "error": "not_your_claim"}
 	}

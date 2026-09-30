@@ -82,8 +82,11 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 }
 
 func bridgeMessage(m session.ToBridge) map[string]any {
-	if p := m.Pointer; p != nil {
-		return map[string]any{"type": "pointer", "action": p.Action, "x": p.X, "y": p.Y, "t": p.T}
+	if in := m.Input; in != nil {
+		if in.Type == "wheel" {
+			return map[string]any{"type": "wheel", "x": in.X, "y": in.Y, "dx": in.DX, "dy": in.DY, "t": in.T}
+		}
+		return map[string]any{"type": "pointer", "action": in.Action, "x": in.X, "y": in.Y, "t": in.T}
 	}
 	e := m.Event
 	out := map[string]any{"type": string(e.State)}

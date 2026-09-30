@@ -110,6 +110,115 @@ func TestClaimingSolversPointerEventsReachTheBridge(t *testing.T) {
 	}
 }
 
+func TestClaimingSolversMoveAndWheelEventsReachTheBridgeInOrder(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
+	key := h.register()
+	h.credit(key, 10_000)
+	created := h.createTask(key)
+	id := created.body["task_id"].(string)
+	b := h.connectBridge(created)
+	s := h.connectSolver()
+	s.mustClaim(id)
+
+	sent := []map[string]any{
+		{"type": "pointer", "task_id": id, "action": "down", "x": 0.1, "y": 0.5, "t": 100.0},
+		{"type": "pointer", "task_id": id, "action": "move", "x": 0.2, "y": 0.5, "t": 125.0},
+		{"type": "wheel", "task_id": id, "x": 0.2, "y": 0.5, "dx": 0.0, "dy": 0.25, "t": 140.0},
+		{"type": "pointer", "task_id": id, "action": "move", "x": 0.3, "y": 0.52, "t": 150.0},
+		{"type": "pointer", "task_id": id, "action": "up", "x": 0.3, "y": 0.52, "t": 175.0},
+	}
+	for _, m := range sent {
+		s.send(m)
+	}
+
+	for i, want := range sent {
+		got, ok := awaitMsg(&b.backlog, b.msgs, time.Second, func(m map[string]any) bool {
+			return m["type"] == "pointer" || m["type"] == "wheel"
+		})
+		if !ok {
+			t.Fatalf("input %d: nothing reached the Bridge", i)
+		}
+		for k, v := range want {
+			if k != "task_id" && got[k] != v {
+				t.Errorf("input %d: %s = %v, want %v (got %v)", i, k, got[k], v, got)
+			}
+		}
+	}
+}
+
+func TestWheelInputIsValidated(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
+	key := h.register()
+	h.credit(key, 10_000)
+	created := h.createTask(key)
+	id := created.body["task_id"].(string)
+	b := h.connectBridge(created)
+	s := h.connectSolver()
+	s.mustClaim(id)
+
+	for _, bad := range []map[string]any{
+		{"type": "wheel", "task_id": id, "x": 1.5, "y": 0.5, "dx": 0.0, "dy": 0.1},
+		{"type": "wheel", "task_id": id, "x": 0.5, "y": 0.5, "dx": 0.0, "dy": 50.0},
+	} {
+		s.send(bad)
+		if m := s.next("error", id); m["error"] != "invalid_input" {
+			t.Errorf("%v: error = %v, want invalid_input", bad, m["error"])
+		}
+	}
+	b.never("wheel", 100*time.Millisecond)
+}
+
+func TestReconnectingSolverResumesTheSessionOfTheirClaim(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
+	key := h.register()
+	h.credit(key, 10_000)
+	created := h.createTask(key)
+	id := created.body["task_id"].(string)
+	b := h.connectBridge(created)
+	first := h.connectSolver()
+	first.mustClaim(id)
+	b.send(frame("claimed"))
+	first.next("frame", id)
+	first.conn.Close(websocket.StatusNormalClosure, "")
+
+	again := h.connectSolverAs(first.wallet)
+
+	m := again.next("claimed", id)
+	if m["page_url"] != "https://www.google.com/recaptcha/api2/demo" {
+		t.Errorf("claimed = %v, want the page URL", m)
+	}
+	if left := num(m["solve_left_ms"]); left <= 0 || left > time.Hour.Milliseconds() {
+		t.Errorf("solve_left_ms = %v, want within the solve window", m["solve_left_ms"])
+	}
+	if f := again.next("frame", id); f["data"] != "claimed" {
+		t.Errorf("frame = %v, want the latest frame", f["data"])
+	}
+	again.send(map[string]any{"type": "pointer", "task_id": id, "action": "down", "x": 0.5, "y": 0.5, "t": 1.0})
+	if p := b.next("pointer"); p["action"] != "down" {
+		t.Errorf("pointer = %v, want the reconnected Solver's down", p)
+	}
+}
+
+func TestAnotherWalletCannotResumeASolversSession(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
+	key := h.register()
+	h.credit(key, 10_000)
+	created := h.createTask(key)
+	id := created.body["task_id"].(string)
+	b := h.connectBridge(created)
+	h.connectSolver().mustClaim(id)
+	b.send(frame("claimed"))
+
+	other := h.connectSolver()
+
+	other.never("claimed", id, 100*time.Millisecond)
+	other.never("frame", id, 0)
+	other.send(map[string]any{"type": "pointer", "task_id": id, "action": "down", "x": 0.5, "y": 0.5, "t": 1.0})
+	if m := other.next("error", id); m["error"] != "not_your_claim" {
+		t.Errorf("error = %v, want not_your_claim", m["error"])
+	}
+}
+
 func TestInputFromASolverWithoutTheClaimIsNotForwarded(t *testing.T) {
 	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
 	key := h.register()

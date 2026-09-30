@@ -335,6 +335,27 @@ func (l *Lifecycle) Session(ctx context.Context, id, token string) (Event, error
 	return e, nil
 }
 
+// ClaimOf returns the Task whose live Claim wallet holds, as a Claimed Event,
+// so a Solver who reconnects can resume its Session. ok is false if the
+// Solver holds no Claim or its solve window has passed.
+func (l *Lifecycle) ClaimOf(ctx context.Context, wallet string) (e Event, ok bool, err error) {
+	e = Event{State: Claimed, SolverWallet: wallet}
+	var created, solveDeadline int64
+	err = l.db.QueryRowContext(ctx,
+		`SELECT id, page_url, created_at, solve_deadline FROM tasks
+		 WHERE solver_wallet = ? AND state = ? AND solve_deadline > ?`,
+		wallet, Claimed, time.Now().UnixMilli()).Scan(&e.TaskID, &e.PageURL, &created, &solveDeadline)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, false, nil
+	}
+	if err != nil {
+		return Event{}, false, fmt.Errorf("claim of: %w", err)
+	}
+	e.CreatedAt = time.UnixMilli(created)
+	e.SolveDeadline = time.UnixMilli(solveDeadline)
+	return e, true, nil
+}
+
 // Summary is a Task as shown in a Customer's history.
 type Summary struct {
 	ID        string

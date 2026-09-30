@@ -56,18 +56,22 @@ type session struct {
 	frame  *Frame
 }
 
-// Pointer is one pointer event from the Solver, with coordinates normalized
-// to 0–1 of the Agent's viewport and t the Solver's clock in milliseconds.
-type Pointer struct {
-	Action string // down, move or up
+// Input is one input event from the Solver: a pointer down, move or up, or a
+// wheel scroll. X and Y are normalized to 0–1 of the displayed frame, DX and
+// DY are a wheel's scroll in frame widths and heights, and T is the Solver's
+// clock in milliseconds.
+type Input struct {
+	Type   string // pointer or wheel
+	Action string // down, move or up, for a pointer event
 	X, Y   float64
+	DX, DY float64
 	T      float64
 }
 
 // ToBridge is one message for the Bridge. Exactly one field is set.
 type ToBridge struct {
-	Pointer *Pointer
-	Event   *task.Event // the Task was claimed or ended
+	Input *Input
+	Event *task.Event // the Task was claimed or ended
 }
 
 // Bridge is a Bridge connection's handle on its Task's Session.
@@ -105,9 +109,10 @@ func (r *Relay) LeaveBridge(b *Bridge) {
 	}
 }
 
-// Input forwards a Solver's pointer event to the Bridge, but only from the
-// Solver holding the Task's Claim.
-func (r *Relay) Input(taskID, wallet string, p Pointer) error {
+// Input forwards a Solver's input event to the Bridge, but only from the
+// Solver holding the Task's Claim. Events reach the Bridge in the order they
+// were forwarded.
+func (r *Relay) Input(taskID, wallet string, in Input) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.sessions[taskID]
@@ -117,7 +122,7 @@ func (r *Relay) Input(taskID, wallet string, p Pointer) error {
 	if s.ended || s.solver == "" || s.solver != wallet {
 		return task.ErrNotYourClaim
 	}
-	s.bridge.send(ToBridge{Pointer: &p})
+	s.bridge.send(ToBridge{Input: &in})
 	return nil
 }
 
@@ -187,7 +192,7 @@ func (r *Relay) Publish(e task.Event) {
 	s.bridge.send(ToBridge{Event: &e})
 }
 
-// send never blocks. Pointer events a Bridge is too slow for are dropped, so
+// send never blocks. Input events a Bridge is too slow for are dropped, so
 // a Solver's input can never end the Session; a Bridge too slow to take an
 // Event is dropped.
 func (b *Bridge) send(m ToBridge) {

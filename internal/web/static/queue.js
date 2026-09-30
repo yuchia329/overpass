@@ -1,6 +1,6 @@
 // Queue page: a Solver connects with their wallet, watches Pending Tasks
 // arrive live, and Claims one. During the Session the Agent's page is shown
-// live and the Solver's clicks are sent to the Bridge.
+// live and the Solver's pointer and wheel input is sent to the Bridge.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
@@ -31,35 +31,93 @@ $("give-up").addEventListener("click", () => {
   if (claim) send({ type: "give_up", task_id: claim.id });
 });
 
-// Pointer Events cover mouse and touch alike. Coordinates are sent normalized
-// to 0–1 of the displayed frame, which shows the Agent's whole viewport.
+// Pointer Events cover mouse and touch alike. Positions are sent normalized
+// to 0–1 of the displayed frame, so they do not depend on its size here; the
+// Bridge maps them onto the Agent's page with the frame's metadata. Only the
+// primary pointer is relayed: a second finger does nothing.
 const screen = $("screen");
+const INPUT_INTERVAL_MS = 25; // moves and wheel scrolls go out at up to 40 Hz
+let pressed = false; // a down was sent and its up was not
+let lastInput = 0;
+let pendingMove = null; // the latest move not yet sent
+let pendingWheel = null; // { e, dx, dy }: wheel scroll not yet sent, in frame sizes
+let inputTimer = 0;
+
 screen.addEventListener("pointerdown", (e) => {
+  if (!e.isPrimary || e.button !== 0) return;
   e.preventDefault();
   screen.setPointerCapture(e.pointerId);
-  pointer("down", e);
+  flushInput();
+  pressed = pointer("down", e);
 });
-screen.addEventListener("pointerup", (e) => pointer("up", e));
-screen.addEventListener("pointercancel", (e) => pointer("up", e));
+screen.addEventListener("pointermove", (e) => {
+  if (!e.isPrimary) return;
+  pendingMove = e;
+  scheduleInput();
+});
+const release = (e) => {
+  if (!e.isPrimary || !pressed) return;
+  pressed = false;
+  flushInput();
+  pointer("up", e);
+};
+screen.addEventListener("pointerup", release);
+screen.addEventListener("pointercancel", release);
 screen.addEventListener("contextmenu", (e) => e.preventDefault());
-
-function pointer(action, e) {
+screen.addEventListener("wheel", (e) => {
   if (!claim || screen.hidden) return;
+  e.preventDefault(); // scroll the Agent's page, not this one
+  const r = screen.getBoundingClientRect();
+  // deltaMode: 0 pixels, 1 lines, 2 pages
+  const unit = [1, 16, r.height][e.deltaMode] || 1;
+  const w = pendingWheel || (pendingWheel = { dx: 0, dy: 0 });
+  w.e = e;
+  w.dx += (e.deltaX * unit) / r.width;
+  w.dy += (e.deltaY * unit) / r.height;
+  scheduleInput();
+}, { passive: false });
+
+// scheduleInput sends pending moves and wheel scrolls at most every
+// INPUT_INTERVAL_MS, keeping only the latest move and summing wheel scrolls.
+function scheduleInput() {
+  if (inputTimer) return;
+  inputTimer = setTimeout(flushInput, Math.max(0, lastInput + INPUT_INTERVAL_MS - performance.now()));
+}
+
+// flushInput sends pending input now, so it keeps its order with a down or up.
+function flushInput() {
+  clearTimeout(inputTimer);
+  inputTimer = 0;
+  lastInput = performance.now();
+  if (pendingMove) pointer("move", pendingMove);
+  if (pendingWheel) {
+    const at = position(pendingWheel.e);
+    if (at) send({ type: "wheel", task_id: claim.id, ...at, dx: pendingWheel.dx, dy: pendingWheel.dy, t: pendingWheel.e.timeStamp });
+  }
+  pendingMove = pendingWheel = null;
+}
+
+// pointer sends a pointer event and reports whether it was sent.
+function pointer(action, e) {
+  const at = position(e);
+  if (!at) return false;
+  send({ type: "pointer", task_id: claim.id, action, ...at, t: e.timeStamp });
+  return true;
+}
+
+// position is where e is on the displayed frame, or null outside a Session.
+function position(e) {
+  if (!claim || screen.hidden) return null;
   const r = screen.getBoundingClientRect();
   const clamp = (v) => Math.min(1, Math.max(0, v));
-  send({
-    type: "pointer",
-    task_id: claim.id,
-    action,
-    x: clamp((e.clientX - r.left) / r.width),
-    y: clamp((e.clientY - r.top) / r.height),
-    t: e.timeStamp,
-  });
+  return { x: clamp((e.clientX - r.left) / r.width), y: clamp((e.clientY - r.top) / r.height) };
 }
 
 function connect() {
   if (socket) socket.close();
   tasks.clear();
+  claim = null; // the server resends a Claim this wallet still holds
+  pressed = false;
   render();
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${scheme}://${location.host}/v1/queue?wallet=${encodeURIComponent(wallet)}`);
@@ -89,7 +147,13 @@ function handle(m) {
       tasks.delete(m.task_id);
       break;
     case "claimed":
-      claim = { id: m.task_id, pageURL: claiming.get(m.task_id) || "", deadline: Date.now() + m.solve_window_ms };
+      // A Claim just won carries solve_window_ms; one resumed on reconnect
+      // carries solve_left_ms and its page URL.
+      claim = {
+        id: m.task_id,
+        pageURL: m.page_url || claiming.get(m.task_id) || "",
+        deadline: Date.now() + (m.solve_left_ms ?? m.solve_window_ms),
+      };
       claiming.delete(m.task_id);
       if (early.has(m.task_id)) {
         showFrame(early.get(m.task_id));

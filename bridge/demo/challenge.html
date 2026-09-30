@@ -4,30 +4,79 @@
 <meta charset="utf-8">
 <title>Fake Challenge</title>
 <style>
-  body { margin: 0; height: 100vh; display: grid; place-items: center; font: 18px/1.4 system-ui, sans-serif; background: #f3f4f6; }
+  body { margin: 0; font: 18px/1.4 system-ui, sans-serif; background: #f3f4f6; }
+  main { height: 100vh; display: grid; place-items: center; }
   .card { width: 420px; padding: 32px; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #0002; text-align: center; }
   button { margin-top: 24px; padding: 14px 28px; font: inherit; border: 0; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; }
   #status { margin-top: 16px; color: #6b7280; }
   body[data-cleared="true"] .card { outline: 4px solid #16a34a; }
+  .track { position: relative; height: 48px; margin-top: 24px; background: #e5e7eb; border-radius: 24px; user-select: none; }
+  .track span { line-height: 48px; color: #6b7280; font-size: 15px; }
+  #knob { position: absolute; top: 0; left: 0; width: 48px; height: 48px; border-radius: 24px; background: #2563eb; cursor: grab; touch-action: none; }
+  .below { height: 1200px; padding: 32px; text-align: center; color: #6b7280; }
 </style>
 </head>
 <body>
-<div class="card">
-  <div>Prove you are human to continue.</div>
-  <button id="verify">I'm not a robot</button>
-  <div id="status">Not cleared.</div>
-</div>
+<main>
+  <div class="card">
+    <div>Prove you are human to continue.</div>
+    <button id="verify">I'm not a robot</button>
+    <div class="track" id="track"><span>or slide to verify →</span><div id="knob"></div></div>
+    <div id="status">Not cleared.</div>
+  </div>
+</main>
+<div class="below" id="below">Below the fold: you scrolled the Agent's page.</div>
 <script>
-  // Only a trusted click clears the Challenge, as with a real one.
+  // Only trusted input clears the Challenge, as with a real one: a click on
+  // the button, or dragging the slider knob all the way along its track.
+  const status = document.getElementById("status");
+  const clear = (how) => {
+    document.body.dataset.cleared = "true";
+    status.textContent = `Cleared by ${how} ✓`;
+  };
+
   document.getElementById("verify").addEventListener("click", (e) => {
-    const status = document.getElementById("status");
     if (!e.isTrusted) {
       status.textContent = "Untrusted click rejected.";
       return;
     }
-    document.body.dataset.cleared = "true";
-    status.textContent = "Cleared ✓";
+    clear("click");
   });
+
+  const track = document.getElementById("track");
+  const knob = document.getElementById("knob");
+  let drag = null; // { startX, moves } while the knob is held
+  const maxLeft = () => track.clientWidth - knob.offsetWidth;
+  knob.addEventListener("pointerdown", (e) => {
+    if (!e.isTrusted) return;
+    knob.setPointerCapture(e.pointerId);
+    drag = { startX: e.clientX - knob.offsetLeft, moves: 0 };
+  });
+  knob.addEventListener("pointermove", (e) => {
+    if (!drag || !e.isTrusted) return;
+    drag.moves++;
+    knob.style.left = `${Math.min(maxLeft(), Math.max(0, e.clientX - drag.startX))}px`;
+    status.textContent = `Sliding… ${drag.moves} moves`;
+  });
+  knob.addEventListener("pointercancel", () => {
+    knob.style.left = "0px";
+    drag = null;
+  });
+  knob.addEventListener("pointerup", () => {
+    if (!drag) return;
+    // A real slider Challenge wants a path, not a jump to the end.
+    if (knob.offsetLeft >= maxLeft() - 2 && drag.moves >= 3) {
+      clear(`slider (${drag.moves} moves)`);
+    } else {
+      knob.style.left = "0px";
+      status.textContent = "Slide all the way to the end.";
+    }
+    drag = null;
+  });
+
+  new IntersectionObserver(([entry]) => {
+    if (entry.isIntersecting) entry.target.textContent = `Below the fold: scrolled to ${Math.round(scrollY)}px.`;
+  }).observe(document.getElementById("below"));
 </script>
 </body>
 </html>

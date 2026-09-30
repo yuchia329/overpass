@@ -7,6 +7,8 @@
 
 import type { CDPSession, Frame, Page } from "playwright";
 
+import { type FrameMetadata, toViewport, wheelToViewport } from "./viewport.ts";
+
 /** Reports whether the Agent's page is unblocked. */
 export type ClearedCheck = (page: Page) => Promise<boolean>;
 
@@ -70,8 +72,10 @@ const JPEG_QUALITY = 60;
 const MAX_BUFFERED_BYTES = 1 << 20; // skip frames while the uplink is this far behind
 
 type Pointer = { type: "pointer"; action: "down" | "move" | "up"; x: number; y: number; t: number };
+type Wheel = { type: "wheel"; x: number; y: number; dx: number; dy: number; t: number };
 type Notice =
   | Pointer
+  | Wheel
   | { type: "claimed"; solve_deadline: string }
   | { type: "solved" }
   | { type: "expired" }
@@ -82,8 +86,8 @@ type Notice =
  * the Task is Solved. Throws InsufficientBalanceError, TaskExpiredError or
  * TaskFailedError otherwise.
  *
- * The Solver sees exactly the page's viewport and cannot scroll it, so the
- * whole Challenge must fit in it. Solvers are often on phones, where a small,
+ * The Solver sees exactly the page's viewport. A Solver with a mouse can
+ * scroll it but one on a phone cannot, so the whole Challenge should fit in it. Solvers are often on phones, where a small,
  * portrait viewport (e.g. 480x720 for reCAPTCHA's 400x580 image grid) keeps
  * click targets large.
  */
@@ -105,7 +109,9 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
   };
 
   let poll: ReturnType<typeof setInterval> | undefined;
-  let inputs = Promise.resolve(); // pointer events apply one after another, in order
+  let inputs = Promise.resolve(); // input events apply one after another, in order
+  let shown: FrameMetadata | undefined; // the latest frame sent, which the Solver's input refers to
+  const replay = inputReplay(page);
   const onNavigated = (frame: Frame) => {
     if (frame === page.mainFrame()) send({ type: "url", url: frame.url() });
   };
@@ -115,7 +121,7 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
       socket.onopen = () => {
         send({ type: "url", url: page.url() });
         page.on("framenavigated", onNavigated);
-        startScreencast(cdp, socket).catch(reject);
+        startScreencast(cdp, socket, (md) => (shown = md)).catch(reject);
       };
       socket.onerror = () => {}; // onclose follows and settles
       // Overpass Fails a claimed Task whose Bridge disconnects.
@@ -124,7 +130,8 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
         const m = JSON.parse(String(e.data)) as Notice;
         switch (m.type) {
           case "pointer":
-            inputs = inputs.then(() => applyPointer(page, m)).catch((err) => console.warn("Overpass: input:", err));
+          case "wheel":
+            inputs = inputs.then(() => replay(shown, m)).catch((err) => console.warn("Overpass: input:", err));
             break;
           case "claimed":
             poll ??= pollCleared(page, cleared, () => {
@@ -175,8 +182,8 @@ async function createTask(base: string, apiKey: string, pageURL: string) {
 // looking at a stale frame. Every frame is acked at once instead, and only the
 // latest is sent, at most every FRAME_INTERVAL_MS and never while the uplink
 // is behind.
-async function startScreencast(cdp: CDPSession, socket: WebSocket) {
-  let latest: { data: string; metadata: object } | undefined; // the newest frame not yet sent
+async function startScreencast(cdp: CDPSession, socket: WebSocket, onSent: (md: FrameMetadata) => void) {
+  let latest: { data: string; metadata: FrameMetadata } | undefined; // the newest frame not yet sent
   let lastSent = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const flush = () => {
@@ -188,6 +195,7 @@ async function startScreencast(cdp: CDPSession, socket: WebSocket) {
       return;
     }
     socket.send(JSON.stringify({ type: "frame", ...latest }));
+    onSent(latest.metadata);
     latest = undefined;
     lastSent = Date.now();
   };
@@ -200,13 +208,36 @@ async function startScreencast(cdp: CDPSession, socket: WebSocket) {
 }
 
 // Playwright's mouse goes through CDP input dispatch, so events are trusted
-// and reach cross-origin iframes such as reCAPTCHA's.
-async function applyPointer(page: Page, p: Pointer) {
-  const size =
-    page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })));
-  await page.mouse.move(p.x * size.width, p.y * size.height);
-  if (p.action === "down") await page.mouse.down();
-  if (p.action === "up") await page.mouse.up();
+// and reach cross-origin iframes such as reCAPTCHA's. Moves are applied as
+// they arrive, so a drag follows the Solver's path. An up can be lost (the
+// Solver's connection dropped mid-drag), so a down while the button is still
+// held releases it first rather than leaving it stuck.
+function inputReplay(page: Page) {
+  let pressed = false;
+  return async (shown: FrameMetadata | undefined, m: Pointer | Wheel) => {
+    const md = shown ?? (await viewportMetadata(page));
+    const at = toViewport(md, m.x, m.y);
+    await page.mouse.move(at.x, at.y);
+    if (m.type === "wheel") {
+      const d = wheelToViewport(md, m.dx, m.dy);
+      await page.mouse.wheel(d.dx, d.dy);
+      return;
+    }
+    if (m.action === "down") {
+      if (pressed) await page.mouse.up();
+      await page.mouse.down();
+      pressed = true;
+    } else if (m.action === "up" && pressed) {
+      await page.mouse.up();
+      pressed = false;
+    }
+  };
+}
+
+// Stands in for frame metadata until the first frame is sent.
+async function viewportMetadata(page: Page): Promise<FrameMetadata> {
+  const size = page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })));
+  return { deviceWidth: size.width, deviceHeight: size.height, pageScaleFactor: 1, offsetTop: 0 };
 }
 
 function pollCleared(page: Page, cleared: ClearedCheck, onCleared: () => void) {
