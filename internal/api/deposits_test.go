@@ -16,18 +16,18 @@ import (
 	"github.com/yuchia329/overpass/internal/solana"
 )
 
-// The recorded fixture is a real mainnet `pay send` (memos "Transfer" and
-// "Network fee"). The pay.sh fee payer BcdwLA62… signs first and pays gas; the
-// sender's USDC covers the transfer plus a USDC network fee paid to the fee
-// payer, so neither the signer nor the sender's spend identifies the Deposit.
+// The recorded fixture is the first real Deposit: `pay send 1` from the demo
+// wallet to the service wallet on mainnet (memos "Transfer" and "Network fee
+// (include account creation)"). The pay.sh fee payer BcdwLA62… signs first and
+// pays gas; the sender's USDC covers the transfer plus a USDC network fee that
+// also pays to create the service wallet's USDC token account. So neither the
+// signer nor the sender's spend identifies the Deposit.
 const (
 	fixturePath          = "testdata/pay_send.json"
-	fixtureSignature     = "2RJE2RTVTNU2cxmRKqywKi7XLmKpakJjwmd33UPXnBTpXT3FGD4WE5d9gkkJGZZYx49s5fMbdUenpBkFkvS7NMvo"
-	fixtureSender        = "ANcUifsmnsneQLrvepX9qGjgfW61B2evK9q6vcwRVD52"
-	fixtureRecipient     = "8uVMTVTmS159ytsCTJF5RDT2kQzb8oBozPpHk9TjEjDa"
-	fixtureRecipientATA  = "FK8EhQvcGpb2YgjCYqHMv1zs3GX8t4GFBtpANehUTZwX"
-	fixtureReceived      = 4_460_265 // recipient's USDC increase
-	fixtureSenderSpent   = 4_461_444 // transfer plus the USDC network fee
+	fixtureSignature     = "5oFKCc6aoEbkofbUjqugpngQP2bXe4uh3xB3hQ2nTq7qw5KS8rf87rtfcuaFjLbB3bJz4V5EGKa5pJje9XeARgf6"
+	fixtureSender        = "FAGwq2UkSAp7mTcrgRGyvXCDnAmmfs6DpUtVoHmBYFey"
+	fixtureReceived      = 1_000_000 // service wallet's USDC increase
+	fixtureSenderSpent   = 1_175_913 // transfer plus the USDC network fee
 	testServiceWalletATA = "81Qfr2NMVJeqN6Y89GdXnE9cpeaNuJZU1iEgLGG8G5ov"
 )
 
@@ -62,8 +62,9 @@ func (f *fakeRPC) option() func(*api.Config) {
 	}
 }
 
-// deposit adds the recorded `pay send` as if sender sent it to the service
-// wallet, under a fresh signature, and returns that signature.
+// deposit adds the recorded `pay send` as if sender sent it, under a fresh
+// signature, and returns that signature. Test wallets stand in for the demo
+// wallet because they can sign registration challenges.
 func (f *fakeRPC) deposit(sender string) string {
 	f.t.Helper()
 	raw, err := os.ReadFile(fixturePath)
@@ -74,8 +75,6 @@ func (f *fakeRPC) deposit(sender string) string {
 	tx := strings.NewReplacer(
 		fixtureSignature, sig,
 		fixtureSender, sender,
-		fixtureRecipient, testServiceWallet,
-		fixtureRecipientATA, testServiceWalletATA,
 	).Replace(string(raw))
 	var res struct {
 		Result json.RawMessage `json:"result"`
