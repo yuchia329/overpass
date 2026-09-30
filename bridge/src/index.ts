@@ -170,14 +170,31 @@ async function createTask(base: string, apiKey: string, pageURL: string) {
   return body as { task_id: string; session_token: string };
 }
 
-// Chrome sends the next frame only after the last is acked, so acking after
-// FRAME_INTERVAL_MS caps the frame rate without ever dropping the latest one.
+// Chrome discards repaints while its frames wait for an ack and does not
+// resend them once the page is still, so a late ack would leave the Solver
+// looking at a stale frame. Every frame is acked at once instead, and only the
+// latest is sent, at most every FRAME_INTERVAL_MS and never while the uplink
+// is behind.
 async function startScreencast(cdp: CDPSession, socket: WebSocket) {
-  cdp.on("Page.screencastFrame", ({ data, metadata, sessionId }) => {
-    if (socket.readyState === WebSocket.OPEN && socket.bufferedAmount < MAX_BUFFERED_BYTES) {
-      socket.send(JSON.stringify({ type: "frame", data, metadata }));
+  let latest: { data: string; metadata: object } | undefined; // the newest frame not yet sent
+  let lastSent = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    timer = undefined;
+    if (latest === undefined || socket.readyState !== WebSocket.OPEN) return;
+    const wait = lastSent + FRAME_INTERVAL_MS - Date.now();
+    if (wait > 0 || socket.bufferedAmount >= MAX_BUFFERED_BYTES) {
+      timer = setTimeout(flush, Math.max(wait, FRAME_INTERVAL_MS / 4));
+      return;
     }
-    setTimeout(() => cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {}), FRAME_INTERVAL_MS);
+    socket.send(JSON.stringify({ type: "frame", ...latest }));
+    latest = undefined;
+    lastSent = Date.now();
+  };
+  cdp.on("Page.screencastFrame", ({ data, metadata, sessionId }) => {
+    cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {});
+    latest = { data, metadata };
+    if (timer === undefined) flush();
   });
   await cdp.send("Page.startScreencast", { format: "jpeg", quality: JPEG_QUALITY });
 }

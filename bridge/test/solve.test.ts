@@ -23,6 +23,16 @@ const fixtures: Record<string, string> = {
     <script>addEventListener("message", (e) => { if (e.data === "cleared") document.body.dataset.cleared = "true"; });</script>`,
   "/child": `<body style="margin:0"><button style="width:100vw;height:100vh">Verify</button>
     <script>document.querySelector("button").addEventListener("click", (e) => { if (e.isTrusted) parent.postMessage("cleared", "*"); });</script>`,
+  // burst() repaints ten times, 20ms apart, as reCAPTCHA's fades do, and
+  // resolves with the time of the last repaint.
+  "/burst": `<div id="box" style="width:200px;height:200px;background:#000"></div>
+    <script>window.burst = () => new Promise((done) => {
+      let i = 0;
+      const t = setInterval(() => {
+        box.style.background = "hsl(" + i * 36 + ",80%,50%)";
+        if (++i === 10) { clearInterval(t); done(Date.now()); }
+      }, 20);
+    });</script>`,
 };
 
 let browser: Browser;
@@ -87,6 +97,21 @@ async function claimedSession(
   }
 }
 
+test("the Solver sees the page's final state after a burst of repaints", async () => {
+  type BurstWindow = { burst: () => Promise<number>; done?: boolean };
+  const cleared = (p: Page) => p.evaluate(() => (window as unknown as BurstWindow).done === true);
+  await claimedSession("/burst", { cleared }, async (page, bridge) => {
+    await page.waitForTimeout(300); // the first frame is out of the way
+    const lastRepaint = await page.evaluate(() => (window as unknown as BurstWindow).burst());
+    await page.waitForTimeout(500); // the page is static from here on
+    const metadata = bridge.latest("frame")?.metadata as { timestamp: number } | undefined;
+    assert.ok(metadata, "no frame reached the Solver");
+    const capturedAt = metadata.timestamp * 1000; // seconds since the epoch
+    assert.ok(capturedAt >= lastRepaint, `the Solver's last frame is ${Math.round(lastRepaint - capturedAt)}ms stale`);
+    await page.evaluate(() => ((window as unknown as BurstWindow).done = true));
+  });
+});
+
 async function open(path: string): Promise<Page> {
   const page = await browser.newPage({ viewport: VIEWPORT });
   await page.goto(`http://127.0.0.1:${port}${path}`); // waits for load, iframes included
@@ -97,6 +122,8 @@ type Bridge = {
   send(msg: object): void;
   /** Resolves with the next message of type, or rejects after ms. */
   next(type: string, ms: number): Promise<Record<string, unknown>>;
+  /** The newest message of type received so far and not taken by next. */
+  latest(type: string): Record<string, unknown> | undefined;
 };
 
 // fakeOverpass accepts one Task and hands the test its Bridge socket.
@@ -123,6 +150,7 @@ async function fakeOverpass() {
       });
       resolve({
         send: (msg) => ws.send(JSON.stringify(msg)),
+        latest: (type) => received.findLast((m) => m.type === type),
         next: (type, ms) => {
           const i = received.findIndex((m) => m.type === type);
           if (i >= 0) return Promise.resolve(received.splice(i, 1)[0]);
