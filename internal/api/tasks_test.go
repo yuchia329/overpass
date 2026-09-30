@@ -11,7 +11,7 @@ import (
 
 func TestCreateTaskHoldsExactlyOnePrice(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 50_000)
 
 	res := h.createTask(key)
@@ -26,7 +26,7 @@ func TestCreateTaskHoldsExactlyOnePrice(t *testing.T) {
 
 func TestCreateTaskReturnsTaskIDSessionTokenAndDeadlines(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 10_000)
 	before := time.Now()
 
@@ -52,7 +52,7 @@ func TestCreateTaskReturnsTaskIDSessionTokenAndDeadlines(t *testing.T) {
 
 func TestEachTaskHasItsOwnSessionToken(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 20_000)
 
 	a, b := h.createTask(key), h.createTask(key)
@@ -64,7 +64,7 @@ func TestEachTaskHasItsOwnSessionToken(t *testing.T) {
 
 func TestCreateTaskWithInsufficientBalanceReturns402AndCreatesNoTask(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 9_999)
 
 	res := h.createTask(key)
@@ -94,7 +94,7 @@ func TestCreateTaskWithInsufficientBalanceReturns402AndCreatesNoTask(t *testing.
 
 func TestBalanceListsRecentTasks(t *testing.T) {
 	h := newHarness(t, func(c *api.Config) { c.ClaimWindow = time.Hour })
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 20_000)
 	first, second := h.createTask(key), h.createTask(key)
 
@@ -113,7 +113,7 @@ func TestBalanceListsRecentTasks(t *testing.T) {
 
 func TestConcurrentTaskCreationNeverOverspends(t *testing.T) {
 	h := newHarness(t, func(c *api.Config) { c.ClaimWindow = time.Hour })
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 5*testPrice)
 
 	const attempts = 20
@@ -150,7 +150,7 @@ func TestConcurrentTaskCreationNeverOverspends(t *testing.T) {
 
 func TestUnclaimedTaskExpiresAndReleasesHoldInFull(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 30_000)
 	id := h.createTask(key).body["task_id"].(string)
 
@@ -163,7 +163,7 @@ func TestUnclaimedTaskExpiresAndReleasesHoldInFull(t *testing.T) {
 
 func TestTaskStaysPendingWithinClaimWindow(t *testing.T) {
 	h := newHarness(t, func(c *api.Config) { c.ClaimWindow = time.Hour })
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 10_000)
 	id := h.createTask(key).body["task_id"].(string)
 
@@ -180,7 +180,7 @@ func TestTaskStaysPendingWithinClaimWindow(t *testing.T) {
 func TestTaskOverdueAcrossRestartExpiresOnStartup(t *testing.T) {
 	// Long enough that the first restart always beats the claim timer.
 	h := newHarness(t, func(c *api.Config) { c.ClaimWindow = 500 * time.Millisecond })
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 10_000)
 	id := h.createTask(key).body["task_id"].(string)
 
@@ -204,7 +204,7 @@ func TestPriceAndServiceWalletAreConfigurable(t *testing.T) {
 		c.ServiceWallet = otherWallet
 		c.ClaimWindow = time.Hour
 	})
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 30_000)
 
 	if res := h.createTask(key); res.status != http.StatusCreated {
@@ -221,7 +221,7 @@ func TestPriceAndServiceWalletAreConfigurable(t *testing.T) {
 
 func TestCreateTaskRejectsMissingOrInvalidPageURL(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 	h.credit(key, 10_000)
 
 	for _, pageURL := range []string{"", "not a url", "ftp://example.com/x", "/relative"} {
@@ -241,6 +241,7 @@ func TestInvalidConfigIsRejectedAtStartup(t *testing.T) {
 		func(c *api.Config) { c.ClaimWindow = 0 },
 		func(c *api.Config) { c.SolveWindow = -time.Second },
 		func(c *api.Config) { c.ServiceWallet = "not-a-wallet" },
+		func(c *api.Config) { c.ChallengeTTL = 0 },
 	}
 	for i, mutate := range bad {
 		cfg := api.Config{
@@ -249,6 +250,7 @@ func TestInvalidConfigIsRejectedAtStartup(t *testing.T) {
 			SolveWindow:   time.Second,
 			Price:         testPrice,
 			ServiceWallet: testServiceWallet,
+			ChallengeTTL:  time.Second,
 		}
 		mutate(&cfg)
 		if srv, err := api.New(cfg); err == nil {

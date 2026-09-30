@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yuchia329/overpass/internal/customer"
 	"github.com/yuchia329/overpass/internal/ledger"
-	"github.com/yuchia329/overpass/internal/secret"
 	"github.com/yuchia329/overpass/internal/solana"
 	"github.com/yuchia329/overpass/internal/store"
 	"github.com/yuchia329/overpass/internal/task"
@@ -32,15 +32,17 @@ type Config struct {
 	SolveWindow   time.Duration
 	Price         int64 // USDC base units (6 decimals)
 	ServiceWallet string
-	DevMode       bool // enables the dev credit endpoint
+	DevMode       bool          // enables the dev credit endpoint
+	ChallengeTTL  time.Duration // how long a registration challenge can be signed
 }
 
 // Server is the backend: an http.Handler plus the resources behind it.
 type Server struct {
-	cfg   Config
-	db    *sql.DB
-	tasks *task.Lifecycle
-	mux   *http.ServeMux
+	cfg       Config
+	db        *sql.DB
+	customers *customer.Registry
+	tasks     *task.Lifecycle
+	mux       *http.ServeMux
 }
 
 func (c Config) validate() error {
@@ -51,6 +53,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("claim and solve windows must be positive, got %v and %v", c.ClaimWindow, c.SolveWindow)
 	case !solana.IsPubkey(c.ServiceWallet):
 		return fmt.Errorf("service wallet %q is not a Solana public key", c.ServiceWallet)
+	case c.ChallengeTTL <= 0:
+		return fmt.Errorf("challenge TTL must be positive, got %v", c.ChallengeTTL)
 	}
 	return nil
 }
@@ -59,13 +63,14 @@ func New(cfg Config) (*Server, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	db, err := store.Open(cfg.DBPath, ledger.Schema, task.Schema)
+	db, err := store.Open(cfg.DBPath, customer.Schema, ledger.Schema, task.Schema)
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		cfg: cfg,
-		db:  db,
+		cfg:       cfg,
+		db:        db,
+		customers: customer.New(db, cfg.ChallengeTTL),
 		tasks: task.New(db, task.Config{
 			ClaimWindow: cfg.ClaimWindow,
 			SolveWindow: cfg.SolveWindow,
@@ -77,6 +82,7 @@ func New(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	s.mux.HandleFunc("POST /v1/customers/challenge", s.handleChallenge)
 	s.mux.HandleFunc("POST /v1/customers", s.handleRegister)
 	s.mux.HandleFunc("GET /v1/balance", s.auth(s.handleBalance))
 	s.mux.HandleFunc("POST /v1/tasks", s.auth(s.handleCreateTask))
@@ -93,37 +99,57 @@ func (s *Server) Close() error {
 	return s.db.Close()
 }
 
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Wallet string `json:"wallet"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !solana.IsPubkey(req.Wallet) {
+	c, err := s.customers.Challenge(r.Context(), req.Wallet)
+	if errors.Is(err, customer.ErrInvalidWallet) {
 		writeError(w, http.StatusBadRequest, "invalid_wallet")
 		return
 	}
-	id, key := secret.New("cus_"), secret.New("op_")
-	res, err := s.db.ExecContext(r.Context(),
-		`INSERT INTO customers (id, wallet, api_key_hash, created_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT (wallet) DO NOTHING`,
-		id, req.Wallet, secret.Hash(key), time.Now().UnixMilli())
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// Wallet addresses are public, so never hand out the existing key.
-		var existing string
-		if err := s.db.QueryRowContext(r.Context(), `SELECT id FROM customers WHERE wallet = ?`, req.Wallet).Scan(&existing); err != nil {
-			s.internalError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "wallet_registered", "customer_id": existing})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"nonce":      c.Nonce,
+		"message":    c.Message,
+		"expires_at": c.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	})
+}
+
+// handleRegister creates a Customer, or rotates an existing Customer's API key,
+// once the caller proves they own the wallet by signing its challenge.
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Wallet    string `json:"wallet"`
+		Nonce     string `json:"nonce"`
+		Signature string `json:"signature"` // base58 ed25519 over the challenge message
+	}
+	if !decodeJSON(w, r, &req) {
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"customer_id": id, "api_key": key})
+	reg, err := s.customers.Register(r.Context(), req.Wallet, req.Nonce, req.Signature)
+	switch {
+	case errors.Is(err, customer.ErrInvalidWallet):
+		writeError(w, http.StatusBadRequest, "invalid_wallet")
+		return
+	case errors.Is(err, customer.ErrInvalidProof):
+		writeError(w, http.StatusUnauthorized, "invalid_proof")
+		return
+	case err != nil:
+		s.internalError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if reg.New {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, map[string]any{"customer_id": reg.CustomerID, "api_key": reg.APIKey})
 }
 
 // auth resolves the Bearer API key to a Customer id, or responds 401.
@@ -134,9 +160,8 @@ func (s *Server) auth(next func(w http.ResponseWriter, r *http.Request, customer
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		var customerID string
-		err := s.db.QueryRowContext(r.Context(), `SELECT id FROM customers WHERE api_key_hash = ?`, secret.Hash(key)).Scan(&customerID)
-		if errors.Is(err, sql.ErrNoRows) {
+		customerID, err := s.customers.Authenticate(r.Context(), key)
+		if errors.Is(err, customer.ErrUnknownAPIKey) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

@@ -2,3 +2,7 @@
 *.db-shm
 *.db-wal
 /overpass
+
+# Solana keypair files hold private keys; never commit them.
+pay-account-*.json
+*keypair*.json

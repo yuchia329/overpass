@@ -36,3 +36,23 @@ func IsPubkey(s string) bool {
 	b, ok := DecodeBase58(s)
 	return ok && len(b) == 32
 }
+
+// EncodeBase58 encodes b as base58, the encoding Solana uses for keys and signatures.
+func EncodeBase58(b []byte) string {
+	n := new(big.Int).SetBytes(b)
+	radix := big.NewInt(58)
+	mod := new(big.Int)
+	var out []byte
+	for n.Sign() > 0 {
+		n.DivMod(n, radix, mod)
+		out = append(out, base58Alphabet[mod.Int64()])
+	}
+	// Each leading zero byte encodes as a leading '1'.
+	for i := 0; i < len(b) && b[i] == 0; i++ {
+		out = append(out, '1')
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return string(out)
+}

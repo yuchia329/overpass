@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,13 +12,32 @@ import (
 	"time"
 
 	"github.com/yuchia329/overpass/internal/api"
+	"github.com/yuchia329/overpass/internal/solana"
 )
 
 const (
-	testServiceWallet  = "CW82aTEMcqsqwLaxppzrpEnM41bC83R8JUXpZgYcrhGt"
-	testCustomerWallet = "2Qemdsc7rwW9SFDD2HbjXVSLmn9xo54sT7m9FFGCHJ7b"
-	testPrice          = 10_000
+	testServiceWallet = "CW82aTEMcqsqwLaxppzrpEnM41bC83R8JUXpZgYcrhGt"
+	testPrice         = 10_000
 )
+
+// wallet is a Solana keypair a test Customer signs with.
+type wallet struct {
+	address string
+	key     ed25519.PrivateKey
+}
+
+func newWallet(t *testing.T) wallet {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wallet{address: solana.EncodeBase58(pub), key: priv}
+}
+
+func (w wallet) sign(message string) string {
+	return solana.EncodeBase58(ed25519.Sign(w.key, []byte(message)))
+}
 
 // harness runs the real backend on an httptest server with short windows.
 type harness struct {
@@ -36,6 +56,7 @@ func newHarness(t *testing.T, mutate ...func(*api.Config)) *harness {
 		Price:         testPrice,
 		ServiceWallet: testServiceWallet,
 		DevMode:       true,
+		ChallengeTTL:  time.Second,
 	}
 	for _, m := range mutate {
 		m(&cfg)
@@ -103,10 +124,29 @@ func (h *harness) do(method, path, apiKey string, body any) response {
 	return out
 }
 
-// register registers a wallet and returns its API key.
-func (h *harness) register(wallet string) string {
+// challenge asks for a registration challenge and returns its nonce and message.
+func (h *harness) challenge(address string) (nonce, message string) {
 	h.t.Helper()
-	res := h.do("POST", "/v1/customers", "", map[string]any{"wallet": wallet})
+	res := h.do("POST", "/v1/customers/challenge", "", map[string]any{"wallet": address})
+	if res.status != http.StatusCreated {
+		h.t.Fatalf("challenge: status %d body %v", res.status, res.body)
+	}
+	return res.body["nonce"].(string), res.body["message"].(string)
+}
+
+// registerAs proves ownership of w and returns the raw registration response.
+func (h *harness) registerAs(w wallet) response {
+	h.t.Helper()
+	nonce, message := h.challenge(w.address)
+	return h.do("POST", "/v1/customers", "", map[string]any{
+		"wallet": w.address, "nonce": nonce, "signature": w.sign(message),
+	})
+}
+
+// register registers a fresh wallet and returns its API key.
+func (h *harness) register() string {
+	h.t.Helper()
+	res := h.registerAs(newWallet(h.t))
 	if res.status != http.StatusCreated {
 		h.t.Fatalf("register: status %d body %v", res.status, res.body)
 	}

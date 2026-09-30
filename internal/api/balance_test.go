@@ -9,7 +9,7 @@ import (
 
 func TestNewCustomerHasZeroBalance(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 
 	available, held := h.balance(key)
 
@@ -20,7 +20,7 @@ func TestNewCustomerHasZeroBalance(t *testing.T) {
 
 func TestDevCreditAddsToAvailableBalance(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 
 	h.credit(key, 1_000_000)
 	h.credit(key, 250_000)
@@ -33,7 +33,7 @@ func TestDevCreditAddsToAvailableBalance(t *testing.T) {
 
 func TestDevCreditIsDisabledWithoutDevFlag(t *testing.T) {
 	h := newHarness(t, func(c *api.Config) { c.DevMode = false })
-	key := h.register(testCustomerWallet)
+	key := h.register()
 
 	res := h.do("POST", "/v1/dev/credit", key, map[string]any{"amount": 1_000_000})
 
@@ -47,7 +47,7 @@ func TestDevCreditIsDisabledWithoutDevFlag(t *testing.T) {
 
 func TestDevCreditRejectsNonPositiveAmount(t *testing.T) {
 	h := newHarness(t)
-	key := h.register(testCustomerWallet)
+	key := h.register()
 
 	for _, amount := range []int64{0, -5} {
 		res := h.do("POST", "/v1/dev/credit", key, map[string]any{"amount": amount})
@@ -59,7 +59,7 @@ func TestDevCreditRejectsNonPositiveAmount(t *testing.T) {
 
 func TestAuthenticatedEndpointsRejectMissingOrInvalidAPIKey(t *testing.T) {
 	h := newHarness(t)
-	h.register(testCustomerWallet)
+	h.register()
 
 	endpoints := []struct{ method, path string }{
 		{"GET", "/v1/balance"},

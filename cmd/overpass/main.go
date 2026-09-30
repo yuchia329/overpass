@@ -23,6 +23,7 @@ func main() {
 	flag.DurationVar(&cfg.SolveWindow, "solve-window", 120*time.Second, "how long a Solver has after Claim before the Task Fails (demo: 45s)")
 	flag.Int64Var(&cfg.Price, "price", 10_000, "USDC base units held per Task (10000 = 0.01 USDC)")
 	flag.StringVar(&cfg.ServiceWallet, "service-wallet", "CW82aTEMcqsqwLaxppzrpEnM41bC83R8JUXpZgYcrhGt", "Overpass service wallet public key")
+	flag.DurationVar(&cfg.ChallengeTTL, "challenge-ttl", 5*time.Minute, "how long a registration challenge can be signed")
 	flag.BoolVar(&cfg.DevMode, "dev", false, "enable the dev credit endpoint (POST /v1/dev/credit)")
 	flag.Parse()
 
