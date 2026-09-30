@@ -151,6 +151,79 @@ Other options:
 - Run the Agent without a window: `HEADLESS=1 npm run demo`.
 - Point the Agent at another backend: `OVERPASS_URL=https://… npm run demo`.
 
+## Run the demo against the public backend
+
+The backend runs on the `hubstream` EC2 instance at
+`https://overpass.yuchia.dev`. The Agent stays on the laptop and the Solver
+uses a phone or iPad, both over the public internet.
+
+How it is wired:
+
+- Cloudflare proxies `*.yuchia.dev` (wildcard DNS) and terminates TLS. Its
+  SSL mode must be **Full**, not Flexible or Full (strict): it connects to
+  the instance's k3s Traefik over TLS, and Traefik serves its default
+  self-signed certificate. The Ingress in
+  [deploy/ingress.yaml](deploy/ingress.yaml) is on Traefik's `websecure`
+  entrypoint only. With no plain HTTP route, the API key and session token
+  never cross the internet in cleartext.
+- The backend runs under systemd ([deploy/overpass.service](deploy/overpass.service))
+  on the k3s pod bridge address `10.42.0.1:8080`. Traefik, the host and other
+  pods on the cluster can reach it; the internet cannot.
+  The SQLite file is at `/var/lib/overpass/overpass.db`.
+- The backend never runs with `-dev`, so `POST /v1/dev/credit` returns 404.
+  Balance comes only from real mainnet Deposits.
+- The backend pings every Bridge and Queue socket every 20s
+  (`-ping-interval`). Cloudflare closes WebSockets that are idle for 100s,
+  and a Challenge page that sits still sends no frames.
+- Traefik's access log is off, so the session token in the Bridge's URL is
+  not logged on the instance. Keep it off if you change Traefik's config.
+- The instance must already run k3s with its bundled Traefik, and its pod
+  bridge `cni0` must be `10.42.0.1`, the k3s default.
+
+### 1. Deploy
+
+```sh
+deploy/deploy.sh hubstream
+```
+
+This cross-compiles `cmd/overpass` for the instance, installs the binary and
+unit, restarts the service and applies the Ingress. Rerunning it keeps the
+database. Follow the logs with
+`ssh hubstream journalctl -u overpass -f`.
+
+### 2. Register the Customer against the public URL (once per database)
+
+```sh
+pay account export local
+go run ./cmd/overpass-register -server https://overpass.yuchia.dev -keypair ./pay-account-local-*.json
+rm ./pay-account-local-*.json
+export OVERPASS_API_KEY=op_...
+```
+
+The instance has its own database. On registration it credits every earlier
+Deposit from that wallet, including ones already spent against a local
+database.
+
+### 3. Fund the Balance
+
+Make a real Deposit as in [step 3 above](#3-fund-the-balance) and check it:
+
+```sh
+curl -H "Authorization: Bearer $OVERPASS_API_KEY" https://overpass.yuchia.dev/v1/balance
+```
+
+### 4. Run the Agent on the laptop
+
+```sh
+cd bridge
+OVERPASS_URL=https://overpass.yuchia.dev npm run demo:recaptcha
+```
+
+### 5. Solve from the phone or iPad
+
+Open `https://overpass.yuchia.dev`, connect with the Solver's wallet, and
+Claim the Task within 30s. There is no interstitial page, unlike ngrok.
+
 ## Troubleshooting
 
 - **The phone can't reach `http://<laptop-ip>:8080` over Wi-Fi.** Venue and

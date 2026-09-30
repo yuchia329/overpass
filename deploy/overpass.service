@@ -1,0 +1,17 @@
+[Unit]
+Description=Overpass backend
+# The listen address is on the k3s pod bridge (cni0): Traefik and the host
+# reach it, the internet does not. If cni0 is not up yet, the restart retries.
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+# Never add -dev here: the dev credit endpoint would let any Customer mint Balance.
+ExecStart=/usr/local/bin/overpass -addr 10.42.0.1:8080 -db /var/lib/overpass/overpass.db -claim-window 30s -solve-window 60s
+DynamicUser=yes
+StateDirectory=overpass
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

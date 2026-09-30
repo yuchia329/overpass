@@ -1,0 +1,60 @@
+# Routes https://overpass.yuchia.dev to the backend running on the host
+# under systemd (deploy/overpass.service). Cloudflare terminates public TLS
+# and connects to Traefik's websecure entrypoint over TLS; there is no plain
+# HTTP route. See the README for why.
+#
+# Keep Traefik's access log off: the Bridge sends its session token in the
+# query string (GET /v1/tasks/{id}/bridge?token=…).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: overpass
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: overpass
+  namespace: overpass
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+# The Service has no selector: this slice points it at the host's cni0 address.
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: overpass-host
+  namespace: overpass
+  labels:
+    kubernetes.io/service-name: overpass
+addressType: IPv4
+ports:
+  - name: http
+    port: 8080
+endpoints:
+  - addresses:
+      - 10.42.0.1
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: overpass
+  namespace: overpass
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: overpass.yuchia.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: overpass
+                port:
+                  number: 8080
