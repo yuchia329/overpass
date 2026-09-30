@@ -1,21 +1,250 @@
 # Overpass
 
-Human-in-the-loop unblocking for AI agents. When an Agent's browser hits a
-Challenge it cannot pass (reCAPTCHA, a slider puzzle), it calls
-`solve(page)`. A human Solver claims the Task on the Queue page, drives the
-Agent's browser remotely from their phone or desktop, and clears it. The
-Customer pays per Task in USDC from a prepaid Balance. See
+**A human unblocks your AI Agent when its browser gets stuck.**
+
+An Agent's browser hits a Challenge it cannot pass, such as a reCAPTCHA or a
+slider puzzle. The Agent calls `solve(page)`. A human Solver claims the job
+on the Queue page, controls the Agent's browser remotely from a phone or
+desktop, and clears the Challenge. The Agent then carries on. The Customer
+pays 0.01 USDC per solved Task from a prepaid Balance on Solana.
+
+```ts
+import { solve } from "@overpass/bridge";
+
+await page.goto("https://example.com/login");
+await solve(page); // returns once a human has cleared the Challenge
+await page.click("#submit");
+```
+
+Terms like Task, Hold and Session have exact meanings here. See
 [CONTEXT.md](CONTEXT.md) for the glossary.
 
-- `cmd/overpass`: Go backend, which runs the Queue page, the Session relay and the Ledger.
-- `cmd/overpass-register`: registers a Customer by signing with a Solana keypair file.
-- `bridge/`: TypeScript Bridge SDK (`solve(page)`) plus demo Agents.
+## Contents
 
-## Prerequisites
+- [How it works](#how-it-works)
+- [System architecture](#system-architecture)
+- [Repository layout](#repository-layout)
+- [Run the demo locally](#run-the-demo-locally)
+- [Run the demo against the public backend](#run-the-demo-against-the-public-backend)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Tests](#tests)
+
+## How it works
+
+### The three people involved
+
+| Who          | What they do                                                    | How they talk to Overpass                   |
+| ------------ | --------------------------------------------------------------- | ------------------------------------------- |
+| **Customer** | Owns the Agent. Registers a Solana wallet and prepays USDC.     | API key (`op_...`)                          |
+| **Agent**    | The Customer's Playwright program. Embeds the Bridge SDK.       | `solve(page)` from the Bridge SDK           |
+| **Solver**   | A human who clears Challenges and earns USDC.                   | Queue page in a browser, identified by wallet |
+
+### One Task, start to finish
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Agent + Bridge
+    participant B as Overpass backend
+    participant S as Solver (Queue page)
+
+    A->>B: POST /v1/tasks (API key)
+    B->>B: Hold 0.01 USDC from the Balance
+    B-->>A: task_id + session_token
+    A->>B: open Bridge WebSocket
+    B-->>S: task_added (live Queue)
+    S->>B: claim (first Solver wins)
+    B-->>A: claimed (+ peer token, ICE servers)
+    B-->>S: claimed (+ peer token, ICE servers)
+    loop Session, until cleared or solve window ends
+        A-->>S: page frames (JPEG screencast)
+        S-->>A: pointer / wheel input
+    end
+    A->>A: cleared check passes
+    A->>B: solved
+    B->>B: capture Hold: 0.008 Earning, 0.002 Fee
+    B-->>A: solved, so solve(page) returns
+    B-->>S: task_solved + Earning
+```
+
+In words:
+
+1. **Create.** The Agent calls `solve(page)`. The Bridge creates a Task, and
+   the backend puts a Hold of one Price on the Customer's Balance. If the
+   available Balance is too low, the backend returns 402 and the Bridge
+   throws `InsufficientBalanceError`.
+2. **Queue.** Every connected Solver sees the Task appear live.
+3. **Claim.** The first Solver to tap **Claim** gets it. A Task is claimed at
+   most once and is never requeued.
+4. **Session.** The Bridge streams the page to the Solver with a CDP
+   screencast. The Solver taps, drags and scrolls. The Bridge replays that
+   input through Playwright's mouse API, so the page sees trusted events and
+   never synthetic DOM events.
+5. **Solved.** The Bridge polls the Agent's cleared check every 500 ms (by
+   default, "reCAPTCHA has issued a token"). Once it passes, the Bridge
+   reports Solved, the Hold is captured and `solve(page)` returns.
+
+### How a Task can end
+
+Every Task ends in exactly one of three outcomes. The first one recorded
+wins.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued: POST /v1/tasks (Hold placed)
+    Queued --> Claimed: Solver claims
+    Queued --> Expired: claim window passes
+    Queued --> Failed: Bridge disconnects
+    Claimed --> Solved: cleared check passes
+    Claimed --> Failed: solve window passes / Solver gives up / Bridge disconnects
+    Solved --> [*]: Hold captured (80% Earning, 20% Fee)
+    Expired --> [*]: Hold released
+    Failed --> [*]: Hold released
+```
+
+| Outcome     | Bridge throws         | Money                        |
+| ----------- | --------------------- | ---------------------------- |
+| **Solved**  | nothing, it returns   | Hold captured                |
+| **Expired** | `TaskExpiredError`    | Hold released to the Customer |
+| **Failed**  | `TaskFailedError`     | Hold released to the Customer |
+
+### Money flow
+
+```mermaid
+flowchart LR
+    W[Customer wallet] -- "USDC on Solana mainnet" --> SW[Service wallet]
+    SW -. "backend polls every 5s" .-> BAL[Customer Balance<br/>available + held]
+    BAL -- "Task created" --> H[Hold: 0.01 USDC]
+    H -- Solved --> E[Solver Earning 0.008]
+    H -- Solved --> F[Overpass Fee 0.002]
+    H -- "Expired / Failed" --> BAL
+```
+
+- **Deposit.** The Customer sends USDC from their registered wallet to the
+  service wallet. The backend watches the service wallet's USDC token account
+  and credits the sender's Balance. Deposits are deduplicated by transaction
+  signature.
+- **Unattributed Deposit.** USDC from a wallet nobody has registered is kept
+  and credited once that wallet registers.
+- **Registration.** The Customer proves wallet ownership by signing a
+  single-use challenge (ed25519). Registering again issues a new API key and
+  revokes the old one.
+- Solver payouts are manual for now. The backend records each Earning
+  against the Solver's wallet.
+
+## System architecture
+
+```mermaid
+flowchart TB
+    subgraph Customer machine
+        AG[Agent<br/>Playwright script]
+        BR[Bridge SDK<br/>bridge/src]
+        CH[Chromium page<br/>with the Challenge]
+        AG -- "solve(page)" --> BR
+        BR -- "CDP screencast +<br/>page.mouse" --> CH
+    end
+
+    subgraph Backend ["Overpass backend (Go, cmd/overpass)"]
+        API[HTTP API<br/>internal/api]
+        Q[Queue + Claim<br/>internal/queue]
+        SE[Session relay<br/>internal/session]
+        LE[Ledger: Balance, Holds<br/>internal/ledger]
+        DE[Deposit poller<br/>internal/deposit]
+        DB[(SQLite<br/>overpass.db)]
+        WEB[Queue page<br/>internal/web/static]
+        API --- Q & SE & LE
+        LE --- DB
+        DE --> LE
+    end
+
+    subgraph Solver device
+        QP[Queue page<br/>phone or desktop browser]
+    end
+
+    SOL[(Solana mainnet<br/>JSON-RPC)]
+
+    BR -- "REST: create Task" --> API
+    BR <-- "Bridge WebSocket:<br/>lifecycle + relayed frames/input" --> SE
+    QP <-- "Queue WebSocket:<br/>tasks, claim, relayed frames/input" --> Q
+    WEB -- "serves" --> QP
+    DE -- "getSignaturesForAddress" --> SOL
+    BR <-. "WebRTC data channel (direct):<br/>frames + input" .-> QP
+```
+
+### Components
+
+| Component          | Where                            | Job                                                                                   |
+| ------------------ | -------------------------------- | ------------------------------------------------------------------------------------- |
+| **Bridge SDK**     | [bridge/src/](bridge/src/)       | `solve(page)`: creates the Task, streams frames, replays input, runs the cleared check. |
+| **HTTP API**       | [internal/api/](internal/api/)   | REST endpoints plus the Bridge and Queue WebSockets.                                   |
+| **Queue**          | [internal/queue/](internal/queue/) | Live list of unclaimed Tasks. First Claim wins, one Claim per Solver at a time.       |
+| **Session**        | [internal/session/](internal/session/) | Pairs one Bridge with its Solver. Relays frames and input, and keeps the Session alive across a Solver reconnect. |
+| **Ledger**         | [internal/ledger/](internal/ledger/) | Balances, Holds, capture and release.                                               |
+| **Deposit poller** | [internal/deposit/](internal/deposit/) | Polls Solana for USDC sent to the service wallet and credits Balances.          |
+| **Queue page**     | [internal/web/static/](internal/web/static/) | Solver UI: connect a wallet, claim, see the page, send taps and drags.     |
+| **Register CLI**   | [cmd/overpass-register/](cmd/overpass-register/) | Signs the registration challenge with a Solana keypair file and prints the API key. |
+
+### Two ways frames travel
+
+Frames and input use one of two paths during a Session:
+
+1. **Direct (WebRTC), preferred.** At Claim the backend gives both sides a
+   per-Session peer token and STUN/TURN servers. The Solver's page sends an
+   offer through the backend, the Bridge answers, and a WebRTC data channel
+   opens between them. The Solver must present the peer token before the
+   Bridge sends anything. Frames go as chunked binary JPEG. The backend is out
+   of the data path.
+2. **Relayed (WebSocket), fallback.** If WebRTC is unavailable, blocked, or
+   drops, frames and input go through the backend's two WebSockets.
+
+The Bridge WebSocket stays open either way and carries the Task lifecycle
+(claimed, solved, expired, failed). A direct connection exposes each side's IP
+address to the other. Solvers can opt out on the Queue page, and Agents can
+pass `solve(page, { p2p: false })`. WebRTC in the Bridge comes from
+[werift](https://github.com/shinyoshiaki/werift-webrtc), an optional
+dependency. Without it, Sessions stay relayed.
+
+### HTTP API
+
+| Method + path                    | Auth        | Purpose                                     |
+| -------------------------------- | ----------- | ------------------------------------------- |
+| `POST /v1/customers/challenge`   | none        | Get a registration challenge to sign        |
+| `POST /v1/customers`             | signature   | Register a wallet and get an API key         |
+| `GET /v1/balance`                | API key     | Available and held Balance                   |
+| `POST /v1/tasks`                 | API key     | Create a Task (402 if Balance is too low)    |
+| `GET /v1/tasks/{id}/bridge`      | session token | Bridge WebSocket                           |
+| `GET /v1/queue?wallet=...`       | none        | Solver Queue WebSocket                       |
+| `POST /v1/dev/credit`            | API key     | Free credit, only with `-dev`                |
+| `GET /`                          | none        | Queue page                                   |
+
+Amounts are USDC base units: 1 USDC = 1,000,000.
+
+## Repository layout
+
+```
+cmd/overpass/            Go backend entry point
+cmd/overpass-register/   CLI that registers a Customer with a keypair file
+internal/                Backend packages (api, queue, session, ledger, deposit, ...)
+internal/web/static/     Queue page (plain HTML + JS)
+bridge/src/              Bridge SDK (TypeScript)
+bridge/demo/             Demo Agents: fake Challenge and real reCAPTCHA
+bridge/test/             Bridge tests
+deploy/                  systemd unit, k3s Ingress, deploy script
+CONTEXT.md               Glossary
+```
+
+## Run the demo locally
+
+The Solver uses a phone through an ngrok tunnel. You need three terminals.
+Run every command from the repo root unless the step says otherwise.
+
+### Prerequisites
 
 - Go 1.26+ and Node 22+
-- [pay.sh CLI](https://pay.sh) with a funded **local** account (not a
-  remote-custody one: it must be exportable)
+- [pay.sh CLI](https://pay.sh) with a funded **local** account. A
+  remote-custody account will not work, because the keypair must be
+  exportable.
 - ngrok with an authtoken (`ngrok config add-authtoken <token>`)
 - Bridge dependencies:
 
@@ -23,47 +252,36 @@ Customer pays per Task in USDC from a prepaid Balance. See
   cd bridge && npm ci && npx playwright install chromium
   ```
 
-## Run the demo: Solver on a phone via ngrok
-
-You need three terminals. All commands run from the repo root unless they
-say otherwise.
-
 ### 1. Start the backend (terminal 1)
 
-Free port 8080 first if an old server is still running:
+If an old server is still on port 8080, stop it first:
 
 ```sh
 lsof -ti tcp:8080 | xargs kill
 ```
 
-Then pick one of these two ways to start it.
+Then start the backend in one of two modes.
 
-**With real USDC Deposits.** The server polls Solana mainnet for Deposits
-every 5s:
+**With real USDC Deposits.** The backend polls Solana mainnet every 5s:
 
 ```sh
 go run ./cmd/overpass -claim-window 30s -solve-window 60s
 ```
 
-**Without real USDC.** Deposit polling is off and the dev credit endpoint
-is on:
+**Without real USDC.** Deposit polling is off and free dev credit is on:
 
 ```sh
 go run ./cmd/overpass -claim-window 30s -solve-window 60s -dev -rpc-url ""
 ```
 
-State lives in `overpass.db` in the current directory; change it with
-`-db path`. Keep the same file between runs and your registration and
-Balance carry over.
-
-The Price is 0.01 USDC (10000 base units) per Task. It is split 80/20:
-0.008 USDC is the Solver's Earning and 0.002 USDC is the Fee.
+State lives in `overpass.db` in the current directory (change it with
+`-db path`). Reuse the same file and your registration and Balance carry
+over.
 
 ### 2. Register the Customer (once per database)
 
-The Customer proves wallet ownership by signing a challenge. The pay CLI
-cannot sign messages, so export the account's keypair and let
-`overpass-register` sign:
+The pay CLI cannot sign messages, so export the keypair and let
+`overpass-register` sign the challenge:
 
 ```sh
 pay account export local                      # writes ./pay-account-local-<pubkey>.json
@@ -71,39 +289,32 @@ go run ./cmd/overpass-register -keypair ./pay-account-local-*.json
 rm ./pay-account-local-*.json                  # it holds the private key
 ```
 
-It prints the API key. The key is shown only once, so export it in every
-terminal that runs an Agent:
+It prints the API key once. Export it in every terminal that runs an Agent:
 
 ```sh
 export OVERPASS_API_KEY=op_...
 ```
 
-Registering the same wallet again issues a new API key and revokes the old
-one.
-
 ### 3. Fund the Balance
 
 **Real Deposit.** Send USDC from the registered wallet to the service
-wallet. The backend sees it within about 5s of confirmation:
+wallet. The backend sees it about 5s after confirmation:
 
 ```sh
 pay send 0.05 CW82aTEMcqsqwLaxppzrpEnM41bC83R8JUXpZgYcrhGt --account local
 ```
 
-- pay adds a small network fee on top. Pass `--fee-within` to take it out of
-  the amount instead.
-- Deposits are matched by sender, so send from the wallet you registered.
-- A fresh database picks up that wallet's earlier Deposits too, and credits
-  them once the wallet registers.
+pay adds a small network fee on top. Pass `--fee-within` to take it out of
+the amount instead.
 
-**Dev credit.** This only works if the server was started with `-dev`:
+**Dev credit.** Works only when the backend runs with `-dev`:
 
 ```sh
 curl -X POST -H "Authorization: Bearer $OVERPASS_API_KEY" \
   -d '{"amount":100000}' http://localhost:8080/v1/dev/credit
 ```
 
-Check the Balance (amounts are USDC base units, 1 USDC = 1000000):
+Check the Balance:
 
 ```sh
 curl -H "Authorization: Bearer $OVERPASS_API_KEY" http://localhost:8080/v1/balance
@@ -115,70 +326,55 @@ curl -H "Authorization: Bearer $OVERPASS_API_KEY" http://localhost:8080/v1/balan
 ngrok http 8080
 ```
 
-Copy the `https://….ngrok-free.dev` forwarding URL. On the phone:
+Copy the `https://….ngrok-free.dev` URL. On the phone:
 
 1. Open the URL.
 2. ngrok's free tier shows a warning page the first time. Tap **Visit Site**.
 3. Enter the Solver's Solana wallet address and tap **Connect**. The status
    line should read "Connected as …".
 
-The phone can be on cellular. The Agent keeps talking to
-`http://localhost:8080`; only the phone goes through the tunnel.
+The phone can be on cellular. Only the phone uses the tunnel; the Agent
+talks to `http://localhost:8080`.
 
 ### 5. Run an Agent (terminal 3)
 
 ```sh
 cd bridge
 npm run demo              # local fake Challenge: button click or slider drag
-npm run demo:recaptcha    # Google's reCAPTCHA demo page (default cleared check)
+npm run demo:recaptcha    # Google's reCAPTCHA demo page
 ```
 
 A Chromium window opens and the Agent creates a Task. On the phone:
 
 1. The Task appears in the Queue. Tap **Claim** within 30s.
-2. The Agent's page appears, with its URL and a solve-window countdown.
-3. Clear the Challenge. You can tap, drag the slider, or scroll with a
-   mouse wheel on desktop.
-4. The Agent's cleared check passes, and the Bridge reports Solved. The phone
-   shows "Solved! Earning of 0.008 USDC recorded.", the Agent continues, and
-   the Hold is captured.
+2. The Agent's page appears, with its URL and a countdown.
+3. Clear the Challenge: tap, drag the slider, or scroll with a mouse wheel on
+   desktop.
+4. The phone shows "Solved! Earning of 0.008 USDC recorded." and the Agent
+   continues.
 
 If the phone's connection drops, reopen the URL and connect with the same
 wallet before the solve window ends. The Session resumes.
 
-Other options:
+Options:
 
-- Run the Agent without a window: `HEADLESS=1 npm run demo`.
-- Point the Agent at another backend: `OVERPASS_URL=https://… npm run demo`.
+- No browser window: `HEADLESS=1 npm run demo`
+- Another backend: `OVERPASS_URL=https://… npm run demo`
 
 ## Run the demo against the public backend
 
-The backend runs on the `hubstream` EC2 instance at
-`https://overpass.yuchia.dev`. The Agent stays on the laptop and the Solver
-uses a phone or iPad, both over the public internet.
+The backend runs at `https://overpass.yuchia.dev` on the `hubstream` EC2
+instance. The Agent stays on the laptop; the Solver uses a phone or iPad over
+the internet.
 
-How it is wired:
-
-- Cloudflare proxies `*.yuchia.dev` (wildcard DNS) and terminates TLS. Its
-  SSL mode must be **Full**, not Flexible or Full (strict): it connects to
-  the instance's k3s Traefik over TLS, and Traefik serves its default
-  self-signed certificate. The Ingress in
-  [deploy/ingress.yaml](deploy/ingress.yaml) is on Traefik's `websecure`
-  entrypoint only. With no plain HTTP route, the API key and session token
-  never cross the internet in cleartext.
-- The backend runs under systemd ([deploy/overpass.service](deploy/overpass.service))
-  on the k3s pod bridge address `10.42.0.1:8080`. Traefik, the host and other
-  pods on the cluster can reach it; the internet cannot.
-  The SQLite file is at `/var/lib/overpass/overpass.db`.
-- The backend never runs with `-dev`, so `POST /v1/dev/credit` returns 404.
-  Balance comes only from real mainnet Deposits.
-- The backend pings every Bridge and Queue socket every 20s
-  (`-ping-interval`). Cloudflare closes WebSockets that are idle for 100s,
-  and a Challenge page that sits still sends no frames.
-- Traefik's access log is off, so the session token in the Bridge's URL is
-  not logged on the instance. Keep it off if you change Traefik's config.
-- The instance must already run k3s with its bundled Traefik, and its pod
-  bridge `cni0` must be `10.42.0.1`, the k3s default.
+```mermaid
+flowchart LR
+    AG[Agent on laptop] -- HTTPS / WSS --> CF[Cloudflare<br/>TLS, *.yuchia.dev]
+    PH[Solver phone] -- HTTPS / WSS --> CF
+    CF -- "TLS (SSL mode Full)" --> TR[k3s Traefik<br/>websecure only]
+    TR --> OV["overpass (systemd)<br/>10.42.0.1:8080"]
+    OV --> DB[(/var/lib/overpass/overpass.db)]
+```
 
 ### 1. Deploy
 
@@ -187,11 +383,10 @@ deploy/deploy.sh hubstream
 ```
 
 This cross-compiles `cmd/overpass` for the instance, installs the binary and
-unit, restarts the service and applies the Ingress. Rerunning it keeps the
-database. Follow the logs with
-`ssh hubstream journalctl -u overpass -f`.
+systemd unit, restarts the service and applies the Ingress. The database is
+kept. Follow logs with `ssh hubstream journalctl -u overpass -f`.
 
-### 2. Register the Customer against the public URL (once per database)
+### 2. Register the Customer (once per database)
 
 ```sh
 pay account export local
@@ -201,44 +396,89 @@ export OVERPASS_API_KEY=op_...
 ```
 
 The instance has its own database. On registration it credits every earlier
-Deposit from that wallet, including ones already spent against a local
-database.
+Deposit from that wallet, even ones already spent against a local database.
 
-### 3. Fund the Balance
+### 3. Fund and check the Balance
 
-Make a real Deposit as in [step 3 above](#3-fund-the-balance) and check it:
+Make a real Deposit as in [local step 3](#3-fund-the-balance), then:
 
 ```sh
 curl -H "Authorization: Bearer $OVERPASS_API_KEY" https://overpass.yuchia.dev/v1/balance
 ```
 
-### 4. Run the Agent on the laptop
+### 4. Run the Agent and solve
 
 ```sh
 cd bridge
 OVERPASS_URL=https://overpass.yuchia.dev npm run demo:recaptcha
 ```
 
-### 5. Solve from the phone or iPad
+Open `https://overpass.yuchia.dev` on the phone, connect with the Solver's
+wallet, and Claim within 30s. The public backend gives the Solver 5 minutes
+to clear the Challenge.
 
-Open `https://overpass.yuchia.dev`, connect with the Solver's wallet, and
-Claim the Task within 30s. The public backend gives the Solver 5 minutes to
-clear the Challenge. There is no interstitial page, unlike ngrok.
+### Deployment notes
+
+- **Cloudflare SSL mode must be Full**, not Flexible or Full (strict).
+  Cloudflare connects to Traefik over TLS, and Traefik serves its default
+  self-signed certificate.
+- **HTTPS only.** The Ingress ([deploy/ingress.yaml](deploy/ingress.yaml))
+  uses Traefik's `websecure` entrypoint only, so the API key and session
+  token never cross the internet in cleartext.
+- **Not reachable directly.** The service
+  ([deploy/overpass.service](deploy/overpass.service)) listens on the k3s pod
+  bridge address `10.42.0.1:8080`. Traefik, the host and pods can reach it;
+  the internet cannot. The instance's `cni0` must be `10.42.0.1`, the k3s
+  default.
+- **No `-dev`.** `POST /v1/dev/credit` returns 404. Balance comes only from
+  real Deposits.
+- **Keepalive pings.** The backend pings every socket every 20s. Cloudflare
+  closes WebSockets idle for 100s, and a still page sends no frames.
+- **Keep Traefik's access log off.** The Bridge's session token is in its
+  WebSocket URL.
+
+## Configuration
+
+Flags for `cmd/overpass`:
+
+| Flag              | Default                               | Meaning                                              |
+| ----------------- | ------------------------------------- | ---------------------------------------------------- |
+| `-addr`           | `:8080`                               | Listen address                                       |
+| `-db`             | `overpass.db`                         | SQLite path                                          |
+| `-claim-window`   | `60s`                                 | Time in the Queue before a Task Expires              |
+| `-solve-window`   | `120s`                                | Time after Claim before a Task Fails                 |
+| `-price`          | `10000`                               | USDC base units held per Task (0.01 USDC)            |
+| `-service-wallet` | `CW82aTE…GhGt`                        | Wallet that receives Deposits                        |
+| `-rpc-url`        | Solana mainnet                        | RPC polled for Deposits (empty turns polling off)    |
+| `-poll-interval`  | `5s`                                  | Deposit poll interval                                |
+| `-ping-interval`  | `20s`                                 | WebSocket keepalive (0 turns it off)                 |
+| `-stun`           | `stun:stun.l.google.com:19302`        | STUN URLs for direct Sessions (empty for none)       |
+| `-turn`           | none                                  | TURN URLs; needs `$OVERPASS_TURN_SECRET` (coturn `static-auth-secret`) |
+| `-dev`            | off                                   | Turns on `POST /v1/dev/credit`                       |
+
+`solve(page, options)` in the Bridge:
+
+| Option    | Default                                   | Meaning                                  |
+| --------- | ----------------------------------------- | ---------------------------------------- |
+| `apiKey`  | `$OVERPASS_API_KEY`                       | Customer API key                         |
+| `url`     | `$OVERPASS_URL`, then `http://localhost:8080` | Backend URL                          |
+| `cleared` | reCAPTCHA check                           | `(page) => Promise<boolean>`: is the page unblocked? |
+| `p2p`     | `true`                                    | Allow a direct WebRTC Session            |
+
+Tip: the Solver sees exactly the page's viewport and cannot scroll it on a
+phone. Keep the Challenge inside the viewport. A small portrait viewport such
+as 480x720 keeps tap targets large.
 
 ## Troubleshooting
 
-- **The phone can't reach `http://<laptop-ip>:8080` over Wi-Fi.** Venue and
-  office Wi-Fi usually isolates clients, which is why the demo uses ngrok. As
-  a fallback, use Tailscale: install the app on the phone, sign in to the same
-  account as the laptop, and open `http://<tailscale ip -4>:8080`.
-- **The Queue page loads but stays on "Connecting…".** Reload and tap Visit
-  Site again. The ngrok cookie may have expired.
-- **The Agent fails with `InsufficientBalanceError`.** The available Balance
-  is below the Price. Fund it (step 3).
-- **The Agent fails with `TaskExpiredError` or `TaskFailedError`.** No Solver
-  claimed the Task within the claim window, or the solve window passed. Run
-  the Agent again.
-- **`address already in use`.** Something else is on 8080. See step 1.
+| Problem                                                        | Fix                                                                                              |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Phone can't reach `http://<laptop-ip>:8080` over Wi-Fi         | Venue Wi-Fi usually isolates clients. Use ngrok, or Tailscale: open `http://<tailscale ip -4>:8080`. |
+| Queue page stuck on "Connecting…"                              | Reload and tap **Visit Site** again. The ngrok cookie may have expired.                          |
+| `InsufficientBalanceError`                                     | Available Balance is below the Price. Fund it (step 3).                                          |
+| `TaskExpiredError`                                             | No Solver claimed in time. Run the Agent again.                                                  |
+| `TaskFailedError`                                              | The solve window passed, the Solver gave up, or the Bridge disconnected. Run again.              |
+| `address already in use`                                       | Something else is on 8080. See step 1.                                                           |
 
 ## Tests
 
