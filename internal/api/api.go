@@ -42,6 +42,7 @@ type Config struct {
 	ChallengeTTL  time.Duration // how long a registration challenge can be signed
 	RPCURL        string        // Solana JSON-RPC endpoint polled for Deposits; empty disables polling
 	PollInterval  time.Duration // how often to poll for Deposits
+	PingInterval  time.Duration // how often to ping Bridge and Queue sockets; zero disables
 }
 
 // Server is the backend: an http.Handler plus the resources behind it.
@@ -66,6 +67,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("service wallet %q is not a Solana public key", c.ServiceWallet)
 	case c.ChallengeTTL <= 0:
 		return fmt.Errorf("challenge TTL must be positive, got %v", c.ChallengeTTL)
+	case c.PingInterval < 0:
+		return fmt.Errorf("ping interval must not be negative, got %v", c.PingInterval)
 	case c.RPCURL != "" && c.PollInterval <= 0:
 		return fmt.Errorf("poll interval must be positive, got %v", c.PollInterval)
 	}

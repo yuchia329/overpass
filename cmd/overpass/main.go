@@ -27,6 +27,7 @@ func main() {
 	flag.BoolVar(&cfg.DevMode, "dev", false, "enable the dev credit endpoint (POST /v1/dev/credit)")
 	flag.StringVar(&cfg.RPCURL, "rpc-url", "https://api.mainnet-beta.solana.com", "Solana JSON-RPC endpoint polled for Deposits (empty disables polling)")
 	flag.DurationVar(&cfg.PollInterval, "poll-interval", 5*time.Second, "how often to poll for Deposits")
+	flag.DurationVar(&cfg.PingInterval, "ping-interval", 20*time.Second, "how often to ping Bridge and Queue sockets so proxies keep them open (0 disables)")
 	flag.Parse()
 
 	srv, err := api.New(cfg)

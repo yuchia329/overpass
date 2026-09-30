@@ -65,6 +65,7 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		s.readBridge(ctx, conn, b)
 	}()
+	go keepAlive(ctx, conn, s.cfg.PingInterval)
 	for {
 		select {
 		case m, ok := <-b.C:

@@ -38,6 +38,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		s.readSolver(ctx, conn, wallet)
 	}()
+	go keepAlive(ctx, conn, s.cfg.PingInterval)
 
 	sub, snapshot := s.queue.Subscribe(wallet)
 	defer s.queue.Unsubscribe(sub)
@@ -209,6 +210,28 @@ func taskAdded(t queue.Task) map[string]any {
 		"task_id":   t.ID,
 		"page_url":  t.PageURL,
 		"waited_ms": time.Since(t.CreatedAt).Milliseconds(),
+	}
+}
+
+// keepAlive pings conn every interval until ctx is done. Proxies close
+// sockets that carry nothing for 60–100s, and a Challenge page that sits
+// still sends no frames. A zero interval disables it.
+func keepAlive(ctx context.Context, conn *websocket.Conn, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			// Sending the ping is what keeps the socket busy; a late pong is harmless.
+			pingCtx, cancel := context.WithTimeout(ctx, interval)
+			_ = conn.Ping(pingCtx)
+			cancel()
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
