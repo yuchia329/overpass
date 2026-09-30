@@ -25,12 +25,20 @@ type Message struct {
 	Added   *Task
 	Removed string // Task id: claimed or Expired
 	Failed  *Failed
+	Solved  *Solved
 }
 
 // Failed tells the Solver holding a Claim that its Task Failed.
 type Failed struct {
 	TaskID string
 	Reason task.Reason
+}
+
+// Solved tells the Solver holding a Claim that its Task was Solved and what
+// the captured Hold was split into.
+type Solved struct {
+	TaskID       string
+	Earning, Fee int64
 }
 
 // Sub is one Solver connection's feed of Queue changes.
@@ -65,8 +73,11 @@ func (h *Hub) Publish(e task.Event) {
 		delete(h.pending, e.TaskID)
 		h.broadcast(Message{Removed: e.TaskID})
 	}
-	if e.State == task.Failed {
+	switch e.State {
+	case task.Failed:
 		h.sendTo(e.SolverWallet, Message{Failed: &Failed{TaskID: e.TaskID, Reason: e.Reason}})
+	case task.Solved:
+		h.sendTo(e.SolverWallet, Message{Solved: &Solved{TaskID: e.TaskID, Earning: e.Earning, Fee: e.Fee}})
 	}
 }
 

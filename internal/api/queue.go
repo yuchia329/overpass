@@ -11,6 +11,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/yuchia329/overpass/internal/queue"
+	"github.com/yuchia329/overpass/internal/session"
 	"github.com/yuchia329/overpass/internal/solana"
 	"github.com/yuchia329/overpass/internal/task"
 )
@@ -39,6 +40,8 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	sub, snapshot := s.queue.Subscribe(wallet)
 	defer s.queue.Unsubscribe(sub)
+	viewer := s.relay.Watch(wallet)
+	defer s.relay.Unwatch(viewer)
 	for _, t := range snapshot {
 		if !writeMsg(ctx, conn, taskAdded(t)) {
 			return
@@ -54,6 +57,10 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 			if !writeMsg(ctx, conn, queueMessage(m)) {
 				return
 			}
+		case v := <-viewer.C:
+			if !writeMsg(ctx, conn, frameMessage(v)) {
+				return
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -64,8 +71,12 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 func (s *Server) readSolver(ctx context.Context, conn *websocket.Conn, wallet string) {
 	for {
 		var msg struct {
-			Type   string `json:"type"`
-			TaskID string `json:"task_id"`
+			Type   string  `json:"type"`
+			TaskID string  `json:"task_id"`
+			Action string  `json:"action"`
+			X      float64 `json:"x"`
+			Y      float64 `json:"y"`
+			T      float64 `json:"t"`
 		}
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
 			return
@@ -76,6 +87,8 @@ func (s *Server) readSolver(ctx context.Context, conn *websocket.Conn, wallet st
 			reply = s.claim(ctx, msg.TaskID, wallet)
 		case "give_up":
 			reply = s.giveUp(ctx, msg.TaskID, wallet)
+		case "pointer":
+			reply = s.input(msg.TaskID, wallet, session.Pointer{Action: msg.Action, X: msg.X, Y: msg.Y, T: msg.T})
 		default:
 			reply = map[string]any{"type": "error", "error": "unknown_type"}
 		}
@@ -124,6 +137,19 @@ func (s *Server) giveUp(ctx context.Context, taskID, wallet string) map[string]a
 	return nil
 }
 
+// input forwards a pointer event to the Bridge. It replies only on refusal.
+func (s *Server) input(taskID, wallet string, p session.Pointer) map[string]any {
+	inViewport := func(v float64) bool { return v >= 0 && v <= 1 }
+	if (p.Action != "down" && p.Action != "move" && p.Action != "up") || !inViewport(p.X) || !inViewport(p.Y) {
+		return map[string]any{"type": "error", "task_id": taskID, "error": "invalid_input"}
+	}
+	err := s.relay.Input(taskID, wallet, p)
+	if errors.Is(err, task.ErrNotYourClaim) {
+		return map[string]any{"type": "error", "task_id": taskID, "error": "not_your_claim"}
+	}
+	return nil // forwarded, or dropped because no Bridge is connected
+}
+
 func queueMessage(m queue.Message) map[string]any {
 	switch {
 	case m.Added != nil:
@@ -132,8 +158,20 @@ func queueMessage(m queue.Message) map[string]any {
 		return map[string]any{"type": "task_removed", "task_id": m.Removed}
 	case m.Failed != nil:
 		return map[string]any{"type": "task_failed", "task_id": m.Failed.TaskID, "reason": m.Failed.Reason}
+	case m.Solved != nil:
+		return map[string]any{"type": "task_solved", "task_id": m.Solved.TaskID, "earning": m.Solved.Earning, "fee": m.Solved.Fee}
 	}
 	return nil
+}
+
+func frameMessage(v session.View) map[string]any {
+	return map[string]any{
+		"type":     "frame",
+		"task_id":  v.TaskID,
+		"url":      v.URL,
+		"data":     v.Frame.Data,
+		"metadata": v.Frame.Metadata,
+	}
 }
 
 func taskAdded(t queue.Task) map[string]any {

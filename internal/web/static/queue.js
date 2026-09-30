@@ -1,10 +1,12 @@
 // Queue page: a Solver connects with their wallet, watches Pending Tasks
-// arrive live, and Claims one.
+// arrive live, and Claims one. During the Session the Agent's page is shown
+// live and the Solver's clicks are sent to the Bridge.
 "use strict";
 
 const $ = (id) => document.getElementById(id);
 const tasks = new Map(); // task id -> { pageURL, since } where since is local ms when waited_ms was 0
 const claiming = new Map(); // task id -> page URL, while a Claim is in flight
+const early = new Map(); // task id -> frame that arrived before its claimed reply
 let socket = null;
 let wallet = "";
 let claim = null; // { id, pageURL, deadline } for the Task this Solver holds
@@ -29,6 +31,32 @@ $("give-up").addEventListener("click", () => {
   if (claim) send({ type: "give_up", task_id: claim.id });
 });
 
+// Pointer Events cover mouse and touch alike. Coordinates are sent normalized
+// to 0–1 of the displayed frame, which shows the Agent's whole viewport.
+const screen = $("screen");
+screen.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  screen.setPointerCapture(e.pointerId);
+  pointer("down", e);
+});
+screen.addEventListener("pointerup", (e) => pointer("up", e));
+screen.addEventListener("pointercancel", (e) => pointer("up", e));
+screen.addEventListener("contextmenu", (e) => e.preventDefault());
+
+function pointer(action, e) {
+  if (!claim || screen.hidden) return;
+  const r = screen.getBoundingClientRect();
+  const clamp = (v) => Math.min(1, Math.max(0, v));
+  send({
+    type: "pointer",
+    task_id: claim.id,
+    action,
+    x: clamp((e.clientX - r.left) / r.width),
+    y: clamp((e.clientY - r.top) / r.height),
+    t: e.timeStamp,
+  });
+}
+
 function connect() {
   if (socket) socket.close();
   tasks.clear();
@@ -49,6 +77,10 @@ function connect() {
 }
 
 function handle(m) {
+  if (m.type === "frame") {
+    showFrame(m); // frames arrive often; they do not rebuild the list
+    return;
+  }
   switch (m.type) {
     case "task_added":
       tasks.set(m.task_id, { pageURL: m.page_url, since: Date.now() - m.waited_ms });
@@ -59,10 +91,15 @@ function handle(m) {
     case "claimed":
       claim = { id: m.task_id, pageURL: claiming.get(m.task_id) || "", deadline: Date.now() + m.solve_window_ms };
       claiming.delete(m.task_id);
+      if (early.has(m.task_id)) {
+        showFrame(early.get(m.task_id));
+        early.delete(m.task_id);
+      }
       notice("");
       break;
     case "claim_failed":
       claiming.delete(m.task_id);
+      early.delete(m.task_id);
       notice({
         already_claimed: "Already claimed by another Solver.",
         expired: "That Task has Expired.",
@@ -71,7 +108,14 @@ function handle(m) {
       break;
     case "task_failed":
       if (claim && claim.id === m.task_id) claim = null;
-      notice(m.reason === "gave_up" ? "You gave up the Task." : "Solve window passed; the Task Failed.");
+      notice({
+        gave_up: "You gave up the Task.",
+        bridge_disconnected: "Agent disconnected; the Task Failed.",
+      }[m.reason] || "Solve window passed; the Task Failed.");
+      break;
+    case "task_solved":
+      if (claim && claim.id === m.task_id) claim = null;
+      notice(`Solved! Earning of ${usdc(m.earning)} USDC recorded.`);
       break;
     case "error":
       notice(`Error: ${m.error}.`);
@@ -110,7 +154,14 @@ function render() {
   }));
   $("empty").hidden = tasks.size > 0 || !socket;
   $("claimed").hidden = !claim;
-  if (claim) $("claimed-url").textContent = claim.pageURL;
+  document.querySelector("main").classList.toggle("in-session", !!claim);
+  if (claim) {
+    $("claimed-url").textContent = claim.pageURL;
+  } else {
+    screen.hidden = true;
+    screen.removeAttribute("src");
+    $("screen-wait").hidden = false;
+  }
   tick();
 }
 
@@ -129,6 +180,22 @@ function tick() {
   }
 }
 setInterval(tick, 1000);
+
+function showFrame(m) {
+  // The page may be static, so the first frame can be the only one for a
+  // while; keep it if it beats the claimed reply.
+  if (claiming.has(m.task_id)) early.set(m.task_id, m);
+  if (!claim || claim.id !== m.task_id) return;
+  screen.src = `data:image/jpeg;base64,${m.data}`;
+  screen.hidden = false;
+  $("screen-wait").hidden = true;
+  if (m.url && m.url !== claim.pageURL) {
+    claim.pageURL = m.url;
+    $("claimed-url").textContent = m.url;
+  }
+}
+
+function usdc(units) { return (units / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, ""); }
 
 function status(text) { $("status").textContent = text; }
 

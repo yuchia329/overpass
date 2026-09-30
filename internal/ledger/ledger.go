@@ -113,22 +113,23 @@ func Release(ctx context.Context, tx DBTX, taskID string) error {
 }
 
 // Capture takes a Task's open Hold, splitting it into the Solver's Earning and the Fee.
-func Capture(ctx context.Context, tx DBTX, taskID, solverWallet string) error {
+func Capture(ctx context.Context, tx DBTX, taskID, solverWallet string) (earning, fee int64, err error) {
 	customerID, amount, err := closeHold(ctx, tx, taskID, "captured")
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE customers SET held = held - ? WHERE id = ?`, amount, customerID); err != nil {
-		return fmt.Errorf("capture: %w", err)
+		return 0, 0, fmt.Errorf("capture: %w", err)
 	}
-	earning := amount * EarningPercent / 100
+	earning = amount * EarningPercent / 100
+	fee = amount - earning
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO captures (task_id, solver_wallet, earning, fee, created_at) VALUES (?, ?, ?, ?, ?)`,
-		taskID, solverWallet, earning, amount-earning, time.Now().UnixMilli()); err != nil {
-		return fmt.Errorf("capture: %w", err)
+		taskID, solverWallet, earning, fee, time.Now().UnixMilli()); err != nil {
+		return 0, 0, fmt.Errorf("capture: %w", err)
 	}
-	return nil
+	return earning, fee, nil
 }
 
 // GetBalance reads a Customer's available and held Balance.

@@ -13,6 +13,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; padding: 16px; font: 16px/1.4 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
   main { max-width: 640px; margin: 0 auto; }
+  main.in-session { max-width: 1280px; }
   h1 { font-size: 20px; margin: 0 0 16px; }
   form { display: flex; gap: 8px; }
   input { flex: 1; min-width: 0; padding: 10px; font: inherit; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }
@@ -23,6 +24,9 @@
   #notice { padding: 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 16px; }
   #claimed { padding: 12px; border: 2px solid var(--accent); border-radius: 6px; margin-bottom: 16px; }
   #claimed .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
+  #screen { display: block; width: 100%; height: auto; margin-top: 8px; background: #000; border-radius: 4px;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: crosshair; }
+  #screen-wait { color: var(--muted); font-size: 14px; margin-top: 8px; }
   ul { list-style: none; margin: 0; padding: 0; }
   li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
   li .info { flex: 1; min-width: 0; }
@@ -46,6 +50,8 @@
       <span id="claimed-left"></span>
       <button class="secondary" id="give-up">Give up</button>
     </div>
+    <p id="screen-wait">Waiting for the Agent's page…</p>
+    <img id="screen" alt="The Agent's page" draggable="false" hidden>
   </section>
   <ul id="tasks"></ul>
   <p class="empty" id="empty" hidden>No Tasks waiting.</p>

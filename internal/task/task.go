@@ -79,20 +79,23 @@ type Config struct {
 // Event reports a committed change to a Task. Events for a Task are
 // delivered in the order its changes were committed.
 type Event struct {
-	TaskID       string
-	State        State
-	PageURL      string
-	CreatedAt    time.Time
-	SolverWallet string // set once the Task is claimed
-	Reason       Reason // why a Task Failed
+	TaskID        string
+	State         State
+	PageURL       string
+	CreatedAt     time.Time
+	SolverWallet  string    // set once the Task is claimed
+	SolveDeadline time.Time // set on the Claimed Event
+	Reason        Reason    // why a Task Failed
+	Earning, Fee  int64     // the captured Hold's split, set on the Solved Event
 }
 
 // Reason says why a Task Failed.
 type Reason string
 
 const (
-	SolveWindowPassed Reason = "solve_window"
-	GaveUp            Reason = "gave_up"
+	SolveWindowPassed  Reason = "solve_window"
+	GaveUp             Reason = "gave_up"
+	BridgeDisconnected Reason = "bridge_disconnected"
 )
 
 var (
@@ -101,6 +104,7 @@ var (
 	ErrAlreadyClaimed = errors.New("task already claimed")
 	ErrNotYourClaim   = errors.New("task is not claimed by this solver")
 	ErrHoldingClaim   = errors.New("solver already holds a claim")
+	ErrBadToken       = errors.New("session token does not match task")
 )
 
 // Created is what the Agent gets back from creating a Task.
@@ -168,7 +172,7 @@ func (l *Lifecycle) Claim(ctx context.Context, id, wallet string) (solveDeadline
 		// Measured from the moment the Claim is recorded.
 		now := time.Now()
 		solveDeadline = now.Add(l.cfg.SolveWindow)
-		e := &Event{TaskID: id, State: Claimed, SolverWallet: wallet}
+		e := &Event{TaskID: id, State: Claimed, SolverWallet: wallet, SolveDeadline: solveDeadline}
 		var created int64
 		// The claim deadline is checked here too, in case the Expire timer runs late.
 		err := tx.QueryRowContext(ctx,
@@ -215,17 +219,13 @@ func claimRefusal(ctx context.Context, tx *sql.Tx, id string, now time.Time) err
 
 // failOverdue Fails a claimed Task whose solve window has passed.
 func (l *Lifecycle) failOverdue(ctx context.Context, id string) (bool, error) {
-	return l.transition(ctx, id, Claimed, Failed, SolveWindowPassed, "", func(tx *sql.Tx) error {
-		return ledger.Release(ctx, tx, id)
-	})
+	return l.transition(ctx, id, Claimed, Failed, SolveWindowPassed, "", release(ctx))
 }
 
 // GiveUp Fails a Task at once for the Solver holding its Claim and releases
 // its Hold. It returns ErrNotYourClaim if wallet does not hold a live Claim.
 func (l *Lifecycle) GiveUp(ctx context.Context, id, wallet string) error {
-	won, err := l.transition(ctx, id, Claimed, Failed, GaveUp, wallet, func(tx *sql.Tx) error {
-		return ledger.Release(ctx, tx, id)
-	})
+	won, err := l.transition(ctx, id, Claimed, Failed, GaveUp, wallet, release(ctx))
 	if err == nil && !won {
 		return ErrNotYourClaim
 	}
@@ -235,9 +235,30 @@ func (l *Lifecycle) GiveUp(ctx context.Context, id, wallet string) error {
 // Expire moves a Pending Task to Expired and releases its Hold.
 // It reports whether this call recorded the outcome.
 func (l *Lifecycle) Expire(ctx context.Context, id string) (bool, error) {
-	return l.transition(ctx, id, Pending, Expired, "", "", func(tx *sql.Tx) error {
-		return ledger.Release(ctx, tx, id)
+	return l.transition(ctx, id, Pending, Expired, "", "", release(ctx))
+}
+
+// Solve records that the Bridge's cleared check passed on a claimed Task and
+// captures its Hold, split into the Solver's Earning and the Fee. It reports
+// whether this call recorded the outcome: a Task that already ended, or was
+// never claimed, is left as it is.
+func (l *Lifecycle) Solve(ctx context.Context, id string) (bool, error) {
+	return l.transition(ctx, id, Claimed, Solved, "", "", func(tx *sql.Tx, e *Event) error {
+		var err error
+		e.Earning, e.Fee, err = ledger.Capture(ctx, tx, id, e.SolverWallet)
+		return err
 	})
+}
+
+// BridgeLost Fails a claimed Task whose Bridge disconnected and releases its
+// Hold. A Pending Task stays queued until its claim window ends.
+func (l *Lifecycle) BridgeLost(ctx context.Context, id string) (bool, error) {
+	return l.transition(ctx, id, Claimed, Failed, BridgeDisconnected, "", release(ctx))
+}
+
+// release returns an ended Task's Hold to the Customer in full.
+func release(ctx context.Context) func(*sql.Tx, *Event) error {
+	return func(tx *sql.Tx, e *Event) error { return ledger.Release(ctx, tx, e.TaskID) }
 }
 
 // Resume re-arms timers after a restart, ending overdue Tasks at once, and
@@ -281,6 +302,31 @@ func (l *Lifecycle) Resume(ctx context.Context) error {
 		l.schedule(t.TaskID, time.Until(time.UnixMilli(t.claimDeadline)), l.Expire)
 	}
 	return nil
+}
+
+// Session checks that token is the Task's session token and returns where
+// the Task stands, as an Event. It returns ErrBadToken for an unknown Task or
+// a wrong token, so a token can never reach another Task's Session.
+func (l *Lifecycle) Session(ctx context.Context, id, token string) (Event, error) {
+	e := Event{TaskID: id}
+	var created int64
+	var solver sql.NullString
+	var solveDeadline sql.NullInt64
+	err := l.db.QueryRowContext(ctx,
+		`SELECT state, page_url, created_at, solver_wallet, solve_deadline FROM tasks WHERE id = ? AND session_token_hash = ?`,
+		id, secret.Hash(token)).Scan(&e.State, &e.PageURL, &created, &solver, &solveDeadline)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, ErrBadToken
+	}
+	if err != nil {
+		return Event{}, fmt.Errorf("session: %w", err)
+	}
+	e.CreatedAt = time.UnixMilli(created)
+	e.SolverWallet = solver.String
+	if solveDeadline.Valid {
+		e.SolveDeadline = time.UnixMilli(solveDeadline.Int64)
+	}
+	return e, nil
 }
 
 // Summary is a Task as shown in a Customer's history.
@@ -327,8 +373,8 @@ func (l *Lifecycle) Close() {
 
 // transition moves a Task from one state to another only if it is still in
 // `from` (and, when solver is set, claimed by solver), running money in the
-// same transaction. It reports whether it won.
-func (l *Lifecycle) transition(ctx context.Context, id string, from, to State, reason Reason, solver string, money func(*sql.Tx) error) (bool, error) {
+// same transaction. money may add to the Event. It reports whether it won.
+func (l *Lifecycle) transition(ctx context.Context, id string, from, to State, reason Reason, solver string, money func(*sql.Tx, *Event) error) (bool, error) {
 	return l.commit(ctx, func(tx *sql.Tx) (*Event, error) {
 		e := &Event{TaskID: id, State: to, Reason: reason}
 		var created int64
@@ -345,7 +391,7 @@ func (l *Lifecycle) transition(ctx context.Context, id string, from, to State, r
 		}
 		e.CreatedAt = time.UnixMilli(created)
 		e.SolverWallet = claimant.String
-		return e, money(tx)
+		return e, money(tx, e)
 	})
 }
 

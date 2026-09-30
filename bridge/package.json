@@ -1,0 +1,20 @@
+{
+  "name": "@overpass/bridge",
+  "version": "0.1.0",
+  "description": "Overpass Bridge: hand a blocked Playwright page to a human Solver.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "demo": "tsx demo/agent.ts"
+  },
+  "peerDependencies": {
+    "playwright": ">=1.40"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "playwright": "^1.63.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

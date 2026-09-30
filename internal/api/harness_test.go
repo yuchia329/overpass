@@ -351,25 +351,103 @@ func (s *solver) mustClaim(taskID string) {
 // await returns the first message, already received or arriving within d,
 // that matches. Messages it passes over stay available to later waits.
 func (s *solver) await(d time.Duration, match func(map[string]any) bool) (map[string]any, bool) {
-	for i, m := range s.backlog {
+	return awaitMsg(&s.backlog, s.msgs, d, match)
+}
+
+func awaitMsg(backlog *[]map[string]any, msgs <-chan map[string]any, d time.Duration, match func(map[string]any) bool) (map[string]any, bool) {
+	for i, m := range *backlog {
 		if match(m) {
-			s.backlog = append(s.backlog[:i], s.backlog[i+1:]...)
+			*backlog = append((*backlog)[:i], (*backlog)[i+1:]...)
 			return m, true
 		}
 	}
 	timeout := time.After(d)
 	for {
 		select {
-		case m, ok := <-s.msgs:
+		case m, ok := <-msgs:
 			if !ok {
 				return nil, false
 			}
 			if match(m) {
 				return m, true
 			}
-			s.backlog = append(s.backlog, m)
+			*backlog = append(*backlog, m)
 		case <-timeout:
 			return nil, false
 		}
+	}
+}
+
+// bridge is a Bridge's connection to its Task's Session.
+type bridge struct {
+	t       *testing.T
+	conn    *websocket.Conn
+	msgs    chan map[string]any
+	backlog []map[string]any
+}
+
+// dialBridge opens the Bridge socket for taskID with a session token and
+// returns the HTTP status the upgrade got.
+func (h *harness) dialBridge(taskID, token string) (*websocket.Conn, int) {
+	h.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	conn, res, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(h.url, "http")+"/v1/tasks/"+taskID+"/bridge?token="+token, nil)
+	if err != nil {
+		if res == nil {
+			h.t.Fatalf("dial bridge: %v", err)
+		}
+		return nil, res.StatusCode
+	}
+	h.t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "") })
+	return conn, http.StatusSwitchingProtocols
+}
+
+// connectBridge joins the Session of a Task returned by createTask.
+func (h *harness) connectBridge(created response) *bridge {
+	h.t.Helper()
+	conn, status := h.dialBridge(created.body["task_id"].(string), created.body["session_token"].(string))
+	if conn == nil {
+		h.t.Fatalf("dial bridge: status %d", status)
+	}
+	conn.SetReadLimit(-1)
+	b := &bridge{t: h.t, conn: conn, msgs: make(chan map[string]any, 64)}
+	go func() {
+		defer close(b.msgs)
+		for {
+			var m map[string]any
+			if err := wsjson.Read(context.Background(), conn, &m); err != nil {
+				return
+			}
+			b.msgs <- m
+		}
+	}()
+	return b
+}
+
+func (b *bridge) send(msg map[string]any) {
+	b.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := wsjson.Write(ctx, b.conn, msg); err != nil {
+		b.t.Fatalf("bridge send %v: %v", msg, err)
+	}
+}
+
+// next waits for the next message of type typ.
+func (b *bridge) next(typ string) map[string]any {
+	b.t.Helper()
+	m, ok := awaitMsg(&b.backlog, b.msgs, time.Second, func(m map[string]any) bool { return m["type"] == typ })
+	if !ok {
+		b.t.Fatalf("bridge: no %s message within 1s", typ)
+	}
+	return m
+}
+
+// never asserts no message of type typ arrives within d.
+func (b *bridge) never(typ string, d time.Duration) {
+	b.t.Helper()
+	if m, ok := awaitMsg(&b.backlog, b.msgs, d, func(m map[string]any) bool { return m["type"] == typ }); ok {
+		b.t.Fatalf("bridge: unexpected %s message: %v", typ, m)
 	}
 }

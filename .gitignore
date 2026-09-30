@@ -9,3 +9,4 @@ pay-account-*.json
 
 # Browser automation output
 .playwright-mcp/
+node_modules/

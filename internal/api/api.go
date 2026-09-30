@@ -18,6 +18,7 @@ import (
 	"github.com/yuchia329/overpass/internal/deposit"
 	"github.com/yuchia329/overpass/internal/ledger"
 	"github.com/yuchia329/overpass/internal/queue"
+	"github.com/yuchia329/overpass/internal/session"
 	"github.com/yuchia329/overpass/internal/solana"
 	"github.com/yuchia329/overpass/internal/store"
 	"github.com/yuchia329/overpass/internal/task"
@@ -50,6 +51,7 @@ type Server struct {
 	customers *customer.Registry
 	tasks     *task.Lifecycle
 	queue     *queue.Hub
+	relay     *session.Relay
 	deposits  *deposit.Poller
 	mux       *http.ServeMux
 }
@@ -83,6 +85,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	hub := queue.New()
+	relay := session.New()
 	s := &Server{
 		cfg:       cfg,
 		db:        db,
@@ -92,8 +95,12 @@ func New(cfg Config) (*Server, error) {
 			ClaimWindow: cfg.ClaimWindow,
 			SolveWindow: cfg.SolveWindow,
 			Price:       cfg.Price,
-		}, hub.Publish),
+		}, func(e task.Event) {
+			hub.Publish(e)
+			relay.Publish(e)
+		}),
 		queue: hub,
+		relay: relay,
 		mux:   http.NewServeMux(),
 	}
 	if err := s.tasks.Resume(context.Background()); err != nil {
@@ -109,6 +116,7 @@ func New(cfg Config) (*Server, error) {
 		s.mux.HandleFunc("POST /v1/dev/credit", s.auth(s.handleDevCredit))
 	}
 	s.mux.HandleFunc("GET /v1/queue", s.handleQueue)
+	s.mux.HandleFunc("GET /v1/tasks/{id}/bridge", s.handleBridge)
 	if err := s.routeQueuePage(); err != nil {
 		s.Close()
 		return nil, err
