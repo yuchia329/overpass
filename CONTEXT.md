@@ -78,7 +78,7 @@ Task outcome where no Solver claimed it within the claim window.
 _Avoid_: timed out, cancelled
 
 **Failed**:
-Task outcome where a claimed Task was not Solved within the solve window, the Solver gave up, or the Agent's Bridge disconnected. Whichever outcome is recorded first is final.
+Task outcome where a claimed Task was not Solved within the solve window, the Solver gave up, or the Agent's Bridge disconnected after joining the Session (whether or not the Task was claimed yet). Whichever outcome is recorded first is final.
 _Avoid_: timed out, rejected
 
 **Bridge**:

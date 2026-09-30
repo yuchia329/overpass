@@ -250,9 +250,15 @@ func (l *Lifecycle) Solve(ctx context.Context, id string) (bool, error) {
 	})
 }
 
-// BridgeLost Fails a claimed Task whose Bridge disconnected and releases its
-// Hold. A Pending Task stays queued until its claim window ends.
+// BridgeLost Fails a Pending or claimed Task whose Bridge disconnected and
+// releases its Hold, so no Solver claims or keeps working on a dead Session.
 func (l *Lifecycle) BridgeLost(ctx context.Context, id string) (bool, error) {
+	// Pending first: a Task never returns to Pending, so if it was claimed
+	// in between, the second attempt still sees it.
+	won, err := l.transition(ctx, id, Pending, Failed, BridgeDisconnected, "", release(ctx))
+	if err != nil || won {
+		return won, err
+	}
 	return l.transition(ctx, id, Claimed, Failed, BridgeDisconnected, "", release(ctx))
 }
 

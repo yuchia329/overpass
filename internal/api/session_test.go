@@ -233,30 +233,40 @@ func TestClosingTheBridgeWhileClaimedFailsTheTask(t *testing.T) {
 	}
 }
 
-func TestClosingTheBridgeBeforeAClaimLeavesTheTaskQueued(t *testing.T) {
+func TestClosingTheBridgeBeforeAClaimFailsTheTaskAndRemovesItFromTheQueue(t *testing.T) {
 	h := newHarness(t, func(c *api.Config) { c.ClaimWindow = time.Hour })
 	key := h.register()
 	h.credit(key, 10_000)
 	created := h.createTask(key)
 	id := created.body["task_id"].(string)
 	b := h.connectBridge(created)
+	s := h.connectSolver()
+	s.next("task_added", id)
 
 	b.conn.Close(websocket.StatusNormalClosure, "")
 
-	// Rejoining succeeds only once the first Bridge has left the Session.
-	h.eventually(time.Second, func() bool {
-		conn, _ := h.dialBridge(id, created.body["session_token"].(string))
-		if conn == nil {
-			return false
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-		_, _, err := conn.Read(ctx)
-		return websocket.CloseStatus(err) == -1 // still open, not refused
-	}, "bridge rejoined its pending Task")
-	if got := h.taskState(key, id); got != "pending" {
-		t.Errorf("state = %s, want pending", got)
+	s.next("task_removed", id)
+	if got := h.taskState(key, id); got != "failed" {
+		t.Errorf("state = %s, want failed", got)
 	}
+	if available, held := h.balance(key); available != 10_000 || held != 0 {
+		t.Errorf("balance = %d/%d, want 10000/0", available, held)
+	}
+	if reply := s.claim(id); reply["type"] != "claim_failed" {
+		t.Errorf("claim reply = %v, want claim_failed", reply)
+	}
+}
+
+func TestTaskWhoseBridgeNeverJoinedStaysQueued(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow = time.Hour })
+	key := h.register()
+	h.credit(key, 10_000)
+	created := h.createTask(key)
+	id := created.body["task_id"].(string)
+	// A refused join is not a Bridge leaving.
+	h.dialBridge(id, "st_nope")
+
+	h.connectSolver().mustClaim(id)
 }
 
 func TestASecondBridgeCannotJoinALiveSession(t *testing.T) {
