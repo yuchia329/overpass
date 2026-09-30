@@ -12,7 +12,23 @@ let wallet = "";
 let claim = null; // { id, pageURL, deadline } for the Task this Solver holds
 let retry = 0;
 
-try { $("wallet").value = localStorage.getItem("overpass.wallet") || ""; } catch {}
+// The demo Solver's wallet fills in when none is saved, and can be copied
+// into a Solana wallet app.
+const DEMO_WALLET = $("demo-wallet-address").textContent;
+$("wallet").value = DEMO_WALLET;
+try { $("wallet").value = localStorage.getItem("overpass.wallet") || DEMO_WALLET; } catch {}
+
+$("copy-demo-wallet").addEventListener("click", async () => {
+  const button = $("copy-demo-wallet");
+  try {
+    await navigator.clipboard.writeText(DEMO_WALLET);
+    button.textContent = "Copied";
+    setTimeout(() => { button.textContent = "Copy"; }, 1500);
+  } catch {
+    // No clipboard access (plain http, or denied): select it for a manual copy.
+    getSelection().selectAllChildren($("demo-wallet-address"));
+  }
+});
 
 $("connect").addEventListener("submit", (e) => {
   e.preventDefault();

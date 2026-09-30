@@ -20,6 +20,9 @@
   button { padding: 10px 16px; font: inherit; border: 0; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; }
   button.secondary { background: var(--warn); }
   button:disabled { opacity: 0.4; cursor: default; }
+  #demo-wallet { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; font-size: 14px; color: var(--muted); }
+  #demo-wallet code { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--fg); user-select: all; -webkit-user-select: all; }
+  #demo-wallet button { padding: 6px 12px; font-size: 14px; }
   #status { color: var(--muted); font-size: 14px; margin: 8px 0 16px; }
   #notice { padding: 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 16px; }
   #claimed { padding: 12px; border: 2px solid var(--accent); border-radius: 6px; margin-bottom: 16px; }
@@ -42,6 +45,7 @@
     <input id="wallet" placeholder="Your Solana wallet address" autocomplete="off" spellcheck="false" required>
     <button>Connect</button>
   </form>
+  <p id="demo-wallet">Demo wallet: <code id="demo-wallet-address">C6YuPpdFMxCKxHkkcxtWGmq6okwtq6m1UMtwKGDXEHsm</code> <button type="button" id="copy-demo-wallet">Copy</button></p>
   <p id="status">Not connected.</p>
   <div id="notice" hidden></div>
   <section id="claimed" hidden>
