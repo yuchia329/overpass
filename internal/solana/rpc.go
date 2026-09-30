@@ -47,15 +47,10 @@ type TokenBalance struct {
 	} `json:"uiTokenAmount"`
 }
 
-// SignaturesForAddress lists address's transaction signatures, newest first,
-// stopping before until (all recent ones when until is empty).
-func (c *RPC) SignaturesForAddress(ctx context.Context, address, until string) ([]SignatureInfo, error) {
-	opts := map[string]any{"commitment": "confirmed"}
-	if until != "" {
-		opts["until"] = until
-	}
+// SignaturesForAddress lists address's newest 1000 transaction signatures, newest first.
+func (c *RPC) SignaturesForAddress(ctx context.Context, address string) ([]SignatureInfo, error) {
 	var out []SignatureInfo
-	err := c.call(ctx, "getSignaturesForAddress", []any{address, opts}, &out)
+	err := c.call(ctx, "getSignaturesForAddress", []any{address, map[string]any{"commitment": "confirmed"}}, &out)
 	return out, err
 }
 

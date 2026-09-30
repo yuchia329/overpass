@@ -130,11 +130,21 @@ var errNotYet = errors.New("transaction not available yet")
 // most the newest 1000 signatures, far more than the service wallet gets
 // between polls.
 func (p *Poller) poll(ctx context.Context) error {
-	sigs, err := p.rpc.SignaturesForAddress(ctx, p.tokenAccount, p.cursor)
+	sigs, err := p.rpc.SignaturesForAddress(ctx, p.tokenAccount)
 	if err != nil {
 		return err
 	}
-	for i := len(sigs) - 1; i >= 0; i-- {
+	// The cursor is matched here, not sent as `until`: mainnet RPC is load
+	// balanced, and a node that has not indexed the cursor's transaction yet
+	// rejects `until` as not found.
+	newer := len(sigs)
+	for i, s := range sigs {
+		if s.Signature == p.cursor {
+			newer = i
+			break
+		}
+	}
+	for i := newer - 1; i >= 0; i-- {
 		if !sigs[i].Failed() {
 			err := p.process(ctx, sigs[i].Signature)
 			if errors.Is(err, errNotYet) {

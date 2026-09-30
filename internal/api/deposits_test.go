@@ -3,6 +3,7 @@ package api_test
 import (
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,8 +33,8 @@ const (
 )
 
 // fakeRPC is a Solana JSON-RPC server that serves recorded Deposits to the
-// service wallet's USDC token account. It ignores `until`, so every poll
-// sees every Deposit again.
+// service wallet's USDC token account. Every poll sees every Deposit again,
+// and it rejects `until` the way lagging mainnet nodes do.
 type fakeRPC struct {
 	t   *testing.T
 	url string
@@ -137,6 +138,12 @@ func (f *fakeRPC) serve(w http.ResponseWriter, r *http.Request) {
 		f.polls++
 		if req.Params[0] != testServiceWalletATA {
 			f.t.Errorf("polled %v, want the service wallet's USDC token account %s", req.Params[0], testServiceWalletATA)
+		}
+		if opts, ok := req.Params[1].(map[string]any); ok && opts["until"] != nil {
+			// Like a load-balanced mainnet node that has not indexed that transaction yet.
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]any{"code": -32020, "message": fmt.Sprintf("Transaction %v not found", opts["until"])}})
+			return
 		}
 		list := []map[string]any{}
 		for _, s := range f.sigs {
@@ -301,6 +308,19 @@ func TestBalanceListsRecentDeposits(t *testing.T) {
 	if got := h.available(key); got != 2*fixtureReceived {
 		t.Errorf("available = %d, want %d", got, 2*fixtureReceived)
 	}
+}
+
+func TestLaterDepositsAreCreditedWhenRPCNodesLag(t *testing.T) {
+	rpc := newFakeRPC(t)
+	h := newHarness(t, rpc.option())
+	sender := newWallet(t)
+	key := h.registerKey(sender)
+	rpc.deposit(sender.address)
+	h.eventually(2*time.Second, func() bool { return h.available(key) == fixtureReceived }, "first deposit credited")
+
+	rpc.deposit(sender.address)
+
+	h.eventually(2*time.Second, func() bool { return h.available(key) == 2*fixtureReceived }, "second deposit credited")
 }
 
 func TestPollerSurvivesRPCErrors(t *testing.T) {
