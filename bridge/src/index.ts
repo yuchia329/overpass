@@ -81,6 +81,11 @@ type Notice =
  * Hands page to a human Solver and resolves once the cleared check passes and
  * the Task is Solved. Throws InsufficientBalanceError, TaskExpiredError or
  * TaskFailedError otherwise.
+ *
+ * The Solver sees exactly the page's viewport and cannot scroll it, so the
+ * whole Challenge must fit in it. Solvers are often on phones, where a small,
+ * portrait viewport (e.g. 480x720 for reCAPTCHA's 400x580 image grid) keeps
+ * click targets large.
  */
 export async function solve(page: Page, options: SolveOptions = {}): Promise<void> {
   const base = (options.url ?? process.env.OVERPASS_URL ?? "http://localhost:8080").replace(/\/$/, "");
