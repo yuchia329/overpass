@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,6 +167,69 @@ func TestWheelInputIsValidated(t *testing.T) {
 		}
 	}
 	b.never("wheel", 100*time.Millisecond)
+}
+
+func TestClaimingSolversKeyboardEventsReachTheBridgeInOrder(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
+	key := h.register()
+	h.credit(key, 10_000)
+	created := h.createTask(key)
+	id := created.body["task_id"].(string)
+	b := h.connectBridge(created)
+	s := h.connectSolver()
+	s.mustClaim(id)
+
+	sent := []map[string]any{
+		{"type": "pointer", "task_id": id, "action": "down", "x": 0.4, "y": 0.2, "t": 100.0},
+		{"type": "pointer", "task_id": id, "action": "up", "x": 0.4, "y": 0.2, "t": 150.0},
+		{"type": "text", "task_id": id, "text": "Eli Lilly", "t": 200.0},
+		{"type": "key", "task_id": id, "key": "Backspace", "t": 250.0},
+		{"type": "key", "task_id": id, "key": "Enter", "t": 300.0},
+	}
+	for _, m := range sent {
+		s.send(m)
+	}
+
+	for i, want := range sent {
+		got, ok := awaitMsg(&b.backlog, b.msgs, time.Second, func(m map[string]any) bool {
+			return m["type"] == "pointer" || m["type"] == "text" || m["type"] == "key"
+		})
+		if !ok {
+			t.Fatalf("input %d: nothing reached the Bridge", i)
+		}
+		for k, v := range want {
+			if k != "task_id" && got[k] != v {
+				t.Errorf("input %d: %s = %v, want %v (got %v)", i, k, got[k], v, got)
+			}
+		}
+	}
+}
+
+func TestKeyboardInputIsValidated(t *testing.T) {
+	h := newHarness(t, func(c *api.Config) { c.ClaimWindow, c.SolveWindow = time.Hour, time.Hour })
+	key := h.register()
+	h.credit(key, 10_000)
+	created := h.createTask(key)
+	id := created.body["task_id"].(string)
+	b := h.connectBridge(created)
+	s := h.connectSolver()
+	s.mustClaim(id)
+
+	for _, bad := range []map[string]any{
+		{"type": "text", "task_id": id, "text": ""},
+		{"type": "text", "task_id": id, "text": strings.Repeat("a", 65)},
+		{"type": "text", "task_id": id, "text": "a\nb"},
+		{"type": "key", "task_id": id, "key": "Meta"},
+		{"type": "key", "task_id": id, "key": "Control+L"},
+		{"type": "key", "task_id": id, "key": ""},
+	} {
+		s.send(bad)
+		if m := s.next("error", id); m["error"] != "invalid_input" {
+			t.Errorf("%v: error = %v, want invalid_input", bad, m["error"])
+		}
+	}
+	b.never("text", 100*time.Millisecond)
+	b.never("key", 100*time.Millisecond)
 }
 
 func TestReconnectingSolverResumesTheSessionOfTheirClaim(t *testing.T) {

@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yuchia329/overpass/internal/customer"
 	"github.com/yuchia329/overpass/internal/deposit"
@@ -334,7 +336,8 @@ func (s *Server) handleDevCredit(w http.ResponseWriter, r *http.Request, custome
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request, customerID string) {
 	var req struct {
-		PageURL string `json:"page_url"`
+		PageURL  string `json:"page_url"`
+		Obstacle string `json:"obstacle"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
@@ -343,7 +346,12 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request, custom
 		writeError(w, http.StatusBadRequest, "invalid_page_url")
 		return
 	}
-	created, err := s.tasks.Create(r.Context(), customerID, req.PageURL)
+	obstacle := strings.TrimSpace(req.Obstacle)
+	if !validObstacle(obstacle) {
+		writeError(w, http.StatusBadRequest, "invalid_obstacle")
+		return
+	}
+	created, err := s.tasks.Create(r.Context(), customerID, req.PageURL, obstacle)
 	var insufficient *ledger.InsufficientError
 	if errors.As(err, &insufficient) {
 		writeJSON(w, http.StatusPaymentRequired, map[string]any{
@@ -364,6 +372,15 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request, custom
 		"claim_deadline":  created.ClaimDeadline.UTC().Format(time.RFC3339Nano),
 		"solve_window_ms": s.cfg.SolveWindow.Milliseconds(),
 	})
+}
+
+// maxObstacle bounds the characters of a Task's obstacle description.
+const maxObstacle = 200
+
+// validObstacle reports whether s can describe a Task's obstacle to Solvers:
+// empty, or one line of at most maxObstacle characters.
+func validObstacle(s string) bool {
+	return utf8.RuneCountInString(s) <= maxObstacle && utf8.ValidString(s) && !strings.ContainsFunc(s, unicode.IsControl)
 }
 
 // isPageURL reports whether s is an absolute http(s) URL a Solver can be shown.

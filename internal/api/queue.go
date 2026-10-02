@@ -6,7 +6,10 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -54,6 +57,7 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 		"type":          "claimed",
 		"task_id":       resume.TaskID,
 		"page_url":      resume.PageURL,
+		"obstacle":      resume.Obstacle,
 		"solve_left_ms": time.Until(resume.SolveDeadline).Milliseconds(),
 		"ice_servers":   s.iceServers(),
 	}) {
@@ -84,6 +88,10 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 			}) {
 				return
 			}
+		case n := <-viewer.Notices:
+			if !writeMsg(ctx, conn, map[string]any{"type": n.Type, "task_id": n.TaskID}) {
+				return
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -101,6 +109,8 @@ func (s *Server) readSolver(ctx context.Context, conn *websocket.Conn, wallet st
 			Y      float64 `json:"y"`
 			DX     float64 `json:"dx"`
 			DY     float64 `json:"dy"`
+			Text   string  `json:"text"`
+			Key    string  `json:"key"`
 			T      float64 `json:"t"`
 			SDP    string  `json:"sdp"`
 		}
@@ -115,9 +125,12 @@ func (s *Server) readSolver(ctx context.Context, conn *websocket.Conn, wallet st
 			reply = s.giveUp(ctx, msg.TaskID, wallet)
 		case "rtc_offer":
 			reply = s.offer(msg.TaskID, wallet, msg.SDP)
-		case "pointer", "wheel":
+		case "done":
+			reply = s.done(msg.TaskID, wallet)
+		case "pointer", "wheel", "text", "key":
 			reply = s.input(msg.TaskID, wallet, session.Input{
-				Type: msg.Type, Action: msg.Action, X: msg.X, Y: msg.Y, DX: msg.DX, DY: msg.DY, T: msg.T,
+				Type: msg.Type, Action: msg.Action, X: msg.X, Y: msg.Y, DX: msg.DX, DY: msg.DY,
+				Text: msg.Text, Key: msg.Key, T: msg.T,
 			})
 		default:
 			reply = map[string]any{"type": "error", "error": "unknown_type"}
@@ -171,15 +184,37 @@ func (s *Server) giveUp(ctx context.Context, taskID, wallet string) map[string]a
 // maxWheel bounds one wheel event's scroll, in frame widths or heights.
 const maxWheel = 10
 
-// input forwards a pointer or wheel event to the Bridge. It replies only on refusal.
+// maxText bounds the characters one text event types.
+const maxText = 64
+
+// keys are the named keys a Solver may press. Modifiers are left out, so a
+// Solver cannot send shortcuts such as Ctrl+L. The Bridge keeps the same list.
+var keys = map[string]bool{
+	"Enter": true, "Tab": true, "Backspace": true, "Delete": true, "Escape": true,
+	"ArrowLeft": true, "ArrowRight": true, "ArrowUp": true, "ArrowDown": true,
+	"Home": true, "End": true, "PageUp": true, "PageDown": true,
+}
+
+// validText reports whether t is something a Solver may type: 1 to maxText
+// characters, none of them control characters (Enter and Tab are keys).
+func validText(t string) bool {
+	n := utf8.RuneCountInString(t)
+	return n >= 1 && n <= maxText && utf8.ValidString(t) && !strings.ContainsFunc(t, unicode.IsControl)
+}
+
+// input forwards a Solver's input event to the Bridge. It replies only on refusal.
 func (s *Server) input(taskID, wallet string, in session.Input) map[string]any {
 	inFrame := func(v float64) bool { return v >= 0 && v <= 1 }
-	valid := inFrame(in.X) && inFrame(in.Y)
+	var valid bool
 	switch in.Type {
 	case "pointer":
-		valid = valid && (in.Action == "down" || in.Action == "move" || in.Action == "up")
+		valid = inFrame(in.X) && inFrame(in.Y) && (in.Action == "down" || in.Action == "move" || in.Action == "up")
 	case "wheel":
-		valid = valid && math.Abs(in.DX) <= maxWheel && math.Abs(in.DY) <= maxWheel
+		valid = inFrame(in.X) && inFrame(in.Y) && math.Abs(in.DX) <= maxWheel && math.Abs(in.DY) <= maxWheel
+	case "text":
+		valid = validText(in.Text)
+	case "key":
+		valid = keys[in.Key]
 	}
 	if !valid {
 		return map[string]any{"type": "error", "task_id": taskID, "error": "invalid_input"}
@@ -198,6 +233,16 @@ func (s *Server) offer(taskID, wallet, sdp string) map[string]any {
 		return map[string]any{"type": "error", "task_id": taskID, "error": "invalid_offer"}
 	}
 	if errors.Is(s.relay.Offer(taskID, wallet, sdp), task.ErrNotYourClaim) {
+		return map[string]any{"type": "error", "task_id": taskID, "error": "not_your_claim"}
+	}
+	return nil // forwarded, or dropped because no Bridge is connected
+}
+
+// done tells the Bridge the Solver reports the obstacle cleared, so the
+// Agent can check. It replies only on refusal; the outcome arrives as
+// task_solved, or as not_cleared with the Solver keeping the page.
+func (s *Server) done(taskID, wallet string) map[string]any {
+	if errors.Is(s.relay.Done(taskID, wallet), task.ErrNotYourClaim) {
 		return map[string]any{"type": "error", "task_id": taskID, "error": "not_your_claim"}
 	}
 	return nil // forwarded, or dropped because no Bridge is connected
@@ -232,6 +277,7 @@ func taskAdded(t queue.Task) map[string]any {
 		"type":      "task_added",
 		"task_id":   t.ID,
 		"page_url":  t.PageURL,
+		"obstacle":  t.Obstacle,
 		"waited_ms": time.Since(t.CreatedAt).Milliseconds(),
 	}
 }

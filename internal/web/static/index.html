@@ -33,10 +33,16 @@
   #screen { display: block; width: auto; max-width: 100%; height: auto; margin-top: 8px; background: #000; border-radius: 4px;
     touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: crosshair; }
   #screen-wait { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  #keys { display: block; width: 100%; margin-top: 8px; }
+  #keys-hint { color: var(--muted); font-size: 14px; margin: 4px 0 0; }
   ul { list-style: none; margin: 0; padding: 0; }
   li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
   li .info { flex: 1; min-width: 0; }
   .url { overflow-wrap: anywhere; }
+  .obstacle { overflow-wrap: anywhere; font-size: 14px; margin-top: 2px; }
+  #claimed-obstacle { font-weight: 600; margin-top: 8px; }
+  #claimed-scope { color: var(--muted); font-size: 14px; margin: 2px 0 0; }
+  #claimed .actions { display: flex; gap: 8px; }
   .waited, .empty { color: var(--muted); font-size: 14px; }
   [hidden] { display: none !important; }
 </style>
@@ -54,13 +60,21 @@
   <div id="notice" hidden></div>
   <section id="claimed" hidden>
     <div>Claimed: <span class="url" id="claimed-url"></span></div>
+    <div id="claimed-obstacle"></div>
+    <p id="claimed-scope">Clear only this, then tap Done. The Agent checks it and does the rest of its work itself.</p>
     <div class="row">
       <span id="claimed-left"></span>
-      <button class="secondary" id="give-up">Give up</button>
+      <span class="actions">
+        <button id="done">Done</button>
+        <button class="secondary" id="give-up">Give up</button>
+      </span>
     </div>
     <p id="link"></p>
     <p id="screen-wait">Waiting for the Agent's page…</p>
     <img id="screen" alt="The Agent's page" draggable="false" hidden>
+    <input id="keys" placeholder="Tap here to type into the Agent's page" autocomplete="off" autocapitalize="off"
+      autocorrect="off" spellcheck="false" enterkeyhint="send" aria-label="Type into the Agent's page" hidden>
+    <p id="keys-hint" hidden>Click a field on the page first, then type. On a computer you can type anywhere here.</p>
   </section>
   <ul id="tasks"></ul>
   <p class="empty" id="empty" hidden>No Tasks waiting.</p>

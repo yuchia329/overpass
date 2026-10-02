@@ -17,6 +17,7 @@ const subBuffer = 64
 type Task struct {
 	ID        string
 	PageURL   string
+	Obstacle  string // what the Solver is to clear, as the Agent described it; may be empty
 	CreatedAt time.Time
 }
 
@@ -64,7 +65,7 @@ func (h *Hub) Publish(e task.Event) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if e.State == task.Pending {
-		t := Task{ID: e.TaskID, PageURL: e.PageURL, CreatedAt: e.CreatedAt}
+		t := Task{ID: e.TaskID, PageURL: e.PageURL, Obstacle: e.Obstacle, CreatedAt: e.CreatedAt}
 		h.pending[t.ID] = t
 		h.broadcast(Message{Added: &t})
 		return

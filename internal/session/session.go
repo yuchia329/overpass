@@ -21,6 +21,9 @@ const (
 	// before later ones are dropped. A dropped answer only keeps that Solver
 	// on the relay.
 	answerBuffer = 4
+	// noticeBuffer is how many notices a Solver connection may fall behind
+	// before later ones are dropped.
+	noticeBuffer = 4
 )
 
 var (
@@ -49,6 +52,13 @@ type Answer struct {
 	PeerToken string
 }
 
+// Notice is a message from the Bridge for its Solver, e.g. not_cleared: the
+// Agent checked after the Solver's done and the obstacle is still there.
+type Notice struct {
+	TaskID string
+	Type   string
+}
+
 // Viewer is one Solver connection's feed of the Session it holds the Claim
 // on. Only the latest View is kept: a Solver who falls behind skips frames.
 type Viewer struct {
@@ -57,6 +67,8 @@ type Viewer struct {
 	c       chan View
 	Answers <-chan Answer
 	answers chan Answer
+	Notices <-chan Notice
+	notices chan Notice
 }
 
 // Relay holds the live Sessions. It is fed the Task lifecycle's Events.
@@ -73,27 +85,30 @@ type session struct {
 	// peer presents to the Bridge.
 	peerToken string
 	ended     bool // Solved, Expired or Failed
-	url    string
-	frame  *Frame
+	url       string
+	frame     *Frame
 }
 
-// Input is one input event from the Solver: a pointer down, move or up, or a
-// wheel scroll. X and Y are normalized to 0–1 of the displayed frame, DX and
-// DY are a wheel's scroll in frame widths and heights, and T is the Solver's
-// clock in milliseconds.
+// Input is one input event from the Solver: a pointer down, move or up, a
+// wheel scroll, typed text or a named key press. X and Y are normalized to
+// 0–1 of the displayed frame, DX and DY are a wheel's scroll in frame widths
+// and heights, and T is the Solver's clock in milliseconds.
 type Input struct {
-	Type   string // pointer or wheel
+	Type   string // pointer, wheel, text or key
 	Action string // down, move or up, for a pointer event
 	X, Y   float64
 	DX, DY float64
+	Text   string // characters typed, for a text event
+	Key    string // the key pressed, for a key event, e.g. Enter
 	T      float64
 }
 
-// ToBridge is one message for the Bridge. Exactly one of Input, Offer and
-// Event is set.
+// ToBridge is one message for the Bridge. Exactly one of Input, Offer, Done
+// and Event is set.
 type ToBridge struct {
 	Input *Input
 	Offer string      // the claimant's WebRTC offer SDP
+	Done  bool        // the claimant reports the obstacle cleared
 	Event *task.Event // the Task was claimed or ended
 	// PeerToken comes with a Claimed Event: the credential the claimant's
 	// WebRTC peer must present.
@@ -148,6 +163,12 @@ func (r *Relay) Offer(taskID, wallet, sdp string) error {
 	return r.fromSolver(taskID, wallet, ToBridge{Offer: sdp})
 }
 
+// Done tells the Bridge that the Solver holding the Task's Claim reports the
+// obstacle cleared, so the Agent can check.
+func (r *Relay) Done(taskID, wallet string) error {
+	return r.fromSolver(taskID, wallet, ToBridge{Done: true})
+}
+
 func (r *Relay) fromSolver(taskID, wallet string, m ToBridge) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -183,6 +204,27 @@ func (r *Relay) Answer(b *Bridge, sdp string) {
 	}
 }
 
+// NotCleared tells every connection of the claiming Solver that the Agent
+// checked after their done and the obstacle is still there.
+func (r *Relay) NotCleared(b *Bridge) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.sessions[b.TaskID]
+	if !ok || s.bridge != b || s.solver == "" || s.ended {
+		return
+	}
+	n := Notice{TaskID: b.TaskID, Type: "not_cleared"}
+	for v := range r.viewers {
+		if v.Wallet != s.solver {
+			continue
+		}
+		select {
+		case v.notices <- n:
+		default:
+		}
+	}
+}
+
 // Frame shows a new frame of the Agent's page to the claiming Solver.
 func (r *Relay) Frame(b *Bridge, f Frame) {
 	r.update(b, func(s *session) { s.frame = &f })
@@ -207,8 +249,8 @@ func (r *Relay) update(b *Bridge, change func(*session)) {
 // Watch registers a Solver connection. If the Solver holds a live Claim, its
 // page is shown at once, so a reconnecting Solver picks up where they were.
 func (r *Relay) Watch(wallet string) *Viewer {
-	c, answers := make(chan View, 1), make(chan Answer, answerBuffer)
-	v := &Viewer{Wallet: wallet, C: c, c: c, Answers: answers, answers: answers}
+	c, answers, notices := make(chan View, 1), make(chan Answer, answerBuffer), make(chan Notice, noticeBuffer)
+	v := &Viewer{Wallet: wallet, C: c, c: c, Answers: answers, answers: answers, Notices: notices, notices: notices}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.viewers[v] = struct{}{}

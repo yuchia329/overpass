@@ -8,18 +8,23 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "demo": "tsx demo/agent.ts",
-    "demo:recaptcha": "tsx demo/recaptcha.ts"
+    "demo:recaptcha": "tsx demo/recaptcha.ts",
+    "demo:stagehand": "tsx demo/stagehand.ts",
+    "demo:jev": "uv run --project demo/jev demo/jev/run.py"
   },
   "peerDependencies": {
     "playwright": ">=1.40"
   },
   "devDependencies": {
+    "@browserbasehq/stagehand": "^3.7.3",
     "@types/node": "^22.20.4",
     "@types/ws": "^8.18.2",
+    "ai": "^5.0.271",
     "playwright": "^1.63.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "ws": "^8.22.0"
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
   },
   "optionalDependencies": {
     "werift": "^0.24.4"

@@ -25,6 +25,18 @@ export interface SolveOptions {
   /** Reports when the Challenge is cleared. Defaults to a reCAPTCHA check. */
   cleared?: ClearedCheck;
   /**
+   * What the Solver is to clear, in one sentence, e.g. "Pass the reCAPTCHA
+   * check below the search form." Solvers see it before they claim the
+   * Task, so it sets the scope of their work. At most 200 characters.
+   */
+  obstacle?: string;
+  /**
+   * Checks the page when the Solver taps Done: the Agent has the page back
+   * while it runs. True Solves the Task; false hands the page back to the
+   * Solver, who is told the obstacle is still there. Defaults to cleared.
+   */
+  verify?: ClearedCheck;
+  /**
    * Lets the Solver connect directly over WebRTC, taking frames and input off
    * the backend. The Solver and the Agent then see each other's IP address.
    * Needs the optional werift dependency. Defaults to true.
@@ -86,6 +98,7 @@ type Notice =
   | Input
   | { type: "claimed"; solve_deadline: string; peer_token?: string; ice_servers?: IceServer[] }
   | { type: "rtc_offer"; sdp: string }
+  | { type: "done" }
   | { type: "solved" }
   | { type: "expired" }
   | { type: "failed"; reason?: string };
@@ -105,9 +118,10 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
   const apiKey = options.apiKey ?? process.env.OVERPASS_API_KEY;
   if (!apiKey) throw new OverpassError("Overpass: no API key; pass apiKey or set OVERPASS_API_KEY.");
   const cleared = options.cleared ?? recaptchaCleared;
+  const verify = options.verify ?? cleared;
   const p2p = options.p2p ?? true;
 
-  const task = await createTask(base, apiKey, page.url());
+  const task = await createTask(base, apiKey, page.url(), options.obstacle);
   const cdp = await page.context().newCDPSession(page);
   // No await between opening the socket and setting its handlers below, so
   // no event is missed.
@@ -121,9 +135,45 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
   let poll: ReturnType<typeof setInterval> | undefined;
   let inputs = Promise.resolve(); // input events apply one after another, in order
   let shown: FrameMetadata | undefined; // the latest frame sent, which the Solver's input refers to
+  // Set while the page is the Agent's: once the check is cleared, and while
+  // the Agent checks the Solver's Done. The Solver's input does not apply then.
+  let takenOver = false;
+  let reported = false; // solved was sent or the Task ended: the page is the Agent's for good
+  let checking = false;
   const replay = inputReplay(page);
+  const report = () => {
+    if (reported) return;
+    reported = takenOver = true;
+    clearInterval(poll);
+    send({ type: "solved" });
+  };
+  // The Solver tapped Done. The Agent takes the page, lets the Solver's last
+  // input land, and checks; if the obstacle is still there the page goes
+  // back to the Solver.
+  const checkDone = async () => {
+    if (checking || reported) return;
+    checking = takenOver = true;
+    let ok = false;
+    try {
+      await inputs;
+      await replay.release();
+      ok = await verify(page);
+    } catch (err) {
+      console.warn("Overpass: verify:", err);
+    }
+    checking = false;
+    if (reported) return;
+    if (ok) return report();
+    takenOver = false;
+    send({ type: "not_cleared" });
+  };
   const apply = (m: Input) => {
-    inputs = inputs.then(() => replay(shown, m)).catch((err) => console.warn("Overpass: input:", err));
+    if (takenOver) return;
+    // Input queued before a Done still lands before the check; once solved
+    // is reported, nothing queued lands.
+    inputs = inputs
+      .then(() => (reported ? undefined : replay.apply(shown, m)))
+      .catch((err) => console.warn("Overpass: input:", err));
   };
   let claim: { peerToken: string; iceServers: IceServer[] } | undefined;
   let offered: Peer | undefined; // the newest peer, answered but maybe not ready
@@ -180,17 +230,19 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
         switch (m.type) {
           case "pointer":
           case "wheel":
+          case "text":
+          case "key":
             apply(m);
             break;
           case "rtc_offer":
             if (p2p) answerOffer(m.sdp);
             break;
+          case "done":
+            if (claim || poll) void checkDone();
+            break;
           case "claimed":
             if (m.peer_token) claim = { peerToken: m.peer_token, iceServers: m.ice_servers ?? [] };
-            poll ??= pollCleared(page, cleared, () => {
-              clearInterval(poll);
-              send({ type: "solved" });
-            });
+            poll ??= pollCleared(page, cleared, report);
             break;
           case "solved":
             resolve();
@@ -206,6 +258,11 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
     });
   } finally {
     clearInterval(poll);
+    reported = takenOver = true; // the Task is over: nothing queued lands
+    // Let an input event in flight finish, then release a button the Solver
+    // still holds: a drag cut short must not leave it held for the Agent.
+    await inputs;
+    await replay.release().catch(() => {});
     // The Session ends with the Task: the direct connection goes too.
     offered?.close();
     peer?.close();
@@ -217,11 +274,11 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
   }
 }
 
-async function createTask(base: string, apiKey: string, pageURL: string) {
+async function createTask(base: string, apiKey: string, pageURL: string, obstacle?: string) {
   const res = await fetch(`${base}/v1/tasks`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ page_url: pageURL }),
+    body: JSON.stringify({ page_url: pageURL, obstacle }),
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (res.status === 402) {
@@ -279,14 +336,23 @@ function screencaster(cdp: CDPSession, out: () => FrameOut | undefined, onSent: 
   };
 }
 
-// Playwright's mouse goes through CDP input dispatch, so events are trusted
-// and reach cross-origin iframes such as reCAPTCHA's. Moves are applied as
-// they arrive, so a drag follows the Solver's path. An up can be lost (the
-// Solver's connection dropped mid-drag), so a down while the button is still
-// held releases it first rather than leaving it stuck.
+// Playwright's mouse and keyboard go through CDP input dispatch, so events
+// are trusted and reach cross-origin iframes such as reCAPTCHA's. Moves are
+// applied as they arrive, so a drag follows the Solver's path. An up can be
+// lost (the Solver's connection dropped mid-drag), so a down while the button
+// is still held releases it first rather than leaving it stuck, and release
+// lets go of it when the Session ends. Keys go to whatever has focus, as the
+// Solver's last click left it.
 function inputReplay(page: Page) {
   let pressed = false;
-  return async (shown: FrameMetadata | undefined, m: Input) => {
+  const release = async () => {
+    if (!pressed) return;
+    pressed = false;
+    await page.mouse.up();
+  };
+  const apply = async (shown: FrameMetadata | undefined, m: Input) => {
+    if (m.type === "text") return page.keyboard.type(m.text);
+    if (m.type === "key") return page.keyboard.press(m.key);
     const md = shown ?? (await viewportMetadata(page));
     const at = toViewport(md, m.x, m.y);
     await page.mouse.move(at.x, at.y);
@@ -296,14 +362,14 @@ function inputReplay(page: Page) {
       return;
     }
     if (m.action === "down") {
-      if (pressed) await page.mouse.up();
+      await release();
       await page.mouse.down();
       pressed = true;
-    } else if (m.action === "up" && pressed) {
-      await page.mouse.up();
-      pressed = false;
+    } else if (m.action === "up") {
+      await release();
     }
   };
+  return { apply, release };
 }
 
 // Stands in for frame metadata until the first frame is sent.

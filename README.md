@@ -59,7 +59,7 @@ sequenceDiagram
     B-->>S: claimed (+ peer token, ICE servers)
     loop Session, until cleared or solve window ends
         A-->>S: page frames (JPEG screencast)
-        S-->>A: pointer / wheel input
+        S-->>A: pointer / wheel / keyboard input
     end
     A->>A: cleared check passes
     A->>B: solved
@@ -78,12 +78,18 @@ In words:
 3. **Claim.** The first Solver to tap **Claim** gets it. A Task is claimed at
    most once and is never requeued.
 4. **Session.** The Bridge streams the page to the Solver with a CDP
-   screencast. The Solver taps, drags and scrolls. The Bridge replays that
-   input through Playwright's mouse API, so the page sees trusted events and
-   never synthetic DOM events.
+   screencast. The Solver taps, drags, scrolls and types. The Bridge replays
+   that input through Playwright's mouse and keyboard APIs, so the page sees
+   trusted events and never synthetic DOM events. Typing allows text and a
+   short list of named keys (Enter, Backspace, Tab, arrows...), never
+   Ctrl/Cmd shortcuts.
 5. **Solved.** The Bridge polls the Agent's cleared check every 500 ms (by
-   default, "reCAPTCHA has issued a token"). Once it passes, the Bridge
-   reports Solved, the Hold is captured and `solve(page)` returns.
+   default, "reCAPTCHA has issued a token"). The Solver can also tap
+   **Done**: the Agent takes the page back and runs its verify check (the
+   cleared check unless it passes its own). If the Challenge is still there,
+   the Solver is told so and keeps the page. Once either check passes, the
+   Agent has the page for good, the Bridge reports Solved, the Hold is
+   captured and `solve(page)` returns.
 
 ### How a Task can end
 
@@ -96,7 +102,7 @@ stateDiagram-v2
     Queued --> Claimed: Solver claims
     Queued --> Expired: claim window passes
     Queued --> Failed: Bridge disconnects
-    Claimed --> Solved: cleared check passes
+    Claimed --> Solved: cleared check passes / verify check passes after Done
     Claimed --> Failed: solve window passes / Solver gives up / Bridge disconnects
     Solved --> [*]: Hold captured (80% Earning, 20% Fee)
     Expired --> [*]: Hold released
@@ -228,7 +234,7 @@ cmd/overpass-register/   CLI that registers a Customer with a keypair file
 internal/                Backend packages (api, queue, session, ledger, deposit, ...)
 internal/web/static/     Queue page (plain HTML + JS)
 bridge/src/              Bridge SDK (TypeScript)
-bridge/demo/             Demo Agents: fake Challenge and real reCAPTCHA
+bridge/demo/             Demo Agents: fake Challenge, real reCAPTCHA, Stagehand, Jev
 bridge/test/             Bridge tests
 deploy/                  systemd unit, k3s Ingress, deploy script
 CONTEXT.md               Glossary
@@ -349,7 +355,9 @@ A Chromium window opens and the Agent creates a Task. On the phone:
 1. The Task appears in the Queue. Tap **Claim** within 30s.
 2. The Agent's page appears, with its URL and a countdown.
 3. Clear the Challenge: tap, drag the slider, or scroll with a mouse wheel on
-   desktop.
+   desktop. To type, tap a field on the Agent's page, then use the
+   "Tap here to type" box (on a computer, just type). If the Task did not
+   finish by itself, tap **Done** and the Agent checks the page.
 4. The phone shows "Solved! Earning of 0.008 USDC recorded." and the Agent
    continues.
 
@@ -360,6 +368,39 @@ Options:
 
 - No browser window: `HEADLESS=1 npm run demo`
 - Another backend: `OVERPASS_URL=https://… npm run demo`
+
+### A fast browser agent: Jev Ultrafast
+
+`npm run demo:jev` runs [Jev Ultrafast](https://github.com/browser-use/jev-ultrafast),
+a Python browser agent from Browser Use, on Indiana's business search (INBiz).
+Jev works on its own, the reCAPTCHA included: the demo shows it the controls
+inside frames, which Jev does not read by itself. Jev also gets a
+`HIRE_HUMAN` operation, offered after three attempts at an obstacle, and
+decides itself whether to use it. It then describes the obstacle in one
+sentence, the Solver's whole job, and its tab goes to a Solver.
+
+The Task is Solved when the CAPTCHA issues a new token, or when the Solver
+taps Done and Jev, looking at the page, agrees the obstacle is gone.
+Otherwise the Solver keeps the page until the solve window ends. Either way
+Jev then carries on. When Jev is blocked, it looks again with `HIRE_HUMAN`
+on offer, at most twice a run. `JEV_TRACE=file.json` saves Jev's decisions.
+
+Needs [uv](https://docs.astral.sh/uv/), a TypeSafe key
+(console.typesafe.ai/keys) and a Gemini API key for typing into fields:
+
+```sh
+cd bridge
+TYPESAFE_API_KEY=… GEMINI_API_KEY=… OVERPASS_API_KEY=… npm run demo:jev
+```
+
+The first run launches a separate Chrome with its own profile in
+`~/.overpass/jev-chrome` and a debugging port on 9335. Leave it open between
+runs. Your everyday Chrome would ask "Allow remote debugging?" each time the
+Bridge connects. Set `AGENT_URL` and `AGENT_TASK` for another site.
+
+The page fills the Chrome window, and resizing the window lays it out again.
+`JEV_VIEWPORT` sets its starting size (default `800x900`). The Solver sees the
+same page, so `480x720` gives a Solver on a phone bigger image tiles to tap.
 
 ## Run the demo against the public backend
 
@@ -462,7 +503,9 @@ Flags for `cmd/overpass`:
 | --------- | ----------------------------------------- | ---------------------------------------- |
 | `apiKey`  | `$OVERPASS_API_KEY`                       | Customer API key                         |
 | `url`     | `$OVERPASS_URL`, then `http://localhost:8080` | Backend URL                          |
-| `cleared` | reCAPTCHA check                           | `(page) => Promise<boolean>`: is the page unblocked? |
+| `cleared` | reCAPTCHA check                           | `(page) => Promise<boolean>`: is the page unblocked? Polled. |
+| `verify`  | `cleared`                                 | `(page) => Promise<boolean>`: run once when the Solver taps Done |
+| `obstacle`| none                                      | One sentence (at most 200 characters) naming the Challenge; Solvers see it before they Claim |
 | `p2p`     | `true`                                    | Allow a direct WebRTC Session            |
 
 Tip: the Solver sees exactly the page's viewport and cannot scroll it on a

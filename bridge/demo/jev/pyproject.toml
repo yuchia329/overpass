@@ -1,0 +1,7 @@
+[project]
+name = "overpass-jev-demo"
+version = "0.1.0"
+description = "Overpass demo Agent driven by Jev Ultrafast."
+requires-python = ">=3.12"
+# Jev Ultrafast is not on PyPI; pinned to the commit this demo was built against.
+dependencies = ["jev-ultrafast @ git+https://github.com/browser-use/jev-ultrafast@1231850a0bf1a0c0341fe408ef1668dbbfdfac46"]

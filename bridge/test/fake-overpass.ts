@@ -15,10 +15,16 @@ export type Bridge = {
   count(type: string): number;
 };
 
-// fakeOverpass accepts one Task and hands the test its Bridge socket.
+// fakeOverpass accepts one Task and hands the test its Bridge socket and
+// the body the Task was created with.
 export async function fakeOverpass() {
-  const server = createServer((req, res) => {
+  let created!: (body: Record<string, unknown>) => void;
+  const task = new Promise<Record<string, unknown>>((resolve) => (created = resolve));
+  const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/v1/tasks") {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      created(JSON.parse(body) as Record<string, unknown>);
       res.writeHead(201, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ task_id: "task-1", session_token: "token-1" }));
       return;
@@ -68,6 +74,7 @@ export async function fakeOverpass() {
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
+    task,
     bridge,
     close: async () => {
       for (const ws of wss.clients) ws.terminate();

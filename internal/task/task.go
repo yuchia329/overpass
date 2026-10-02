@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 	id                 TEXT PRIMARY KEY,
 	customer_id        TEXT NOT NULL REFERENCES customers(id),
 	page_url           TEXT NOT NULL,
+	obstacle           TEXT NOT NULL DEFAULT '',
 	state              TEXT NOT NULL CHECK (state IN ('pending', 'claimed', 'solved', 'expired', 'failed')),
 	session_token_hash TEXT NOT NULL UNIQUE,
 	created_at         INTEGER NOT NULL,
@@ -41,6 +42,7 @@ CREATE INDEX IF NOT EXISTS tasks_customer ON tasks (customer_id, created_at);
 var addedColumns = []struct{ name, decl string }{
 	{"solver_wallet", "TEXT"},
 	{"solve_deadline", "INTEGER"},
+	{"obstacle", "TEXT NOT NULL DEFAULT ''"},
 }
 
 // Migrate brings a tasks table created by an earlier version up to Schema.
@@ -82,6 +84,7 @@ type Event struct {
 	TaskID        string
 	State         State
 	PageURL       string
+	Obstacle      string // what the Solver is to clear, as the Agent described it; may be empty
 	CreatedAt     time.Time
 	SolverWallet  string    // set once the Task is claimed
 	SolveDeadline time.Time // set on the Claimed Event
@@ -136,9 +139,10 @@ func New(db *sql.DB, cfg Config, notify func(Event)) *Lifecycle {
 	return &Lifecycle{db: db, cfg: cfg, notify: notify, timers: map[string]*time.Timer{}}
 }
 
-// Create places a Hold of one Price and queues a new Pending Task.
+// Create places a Hold of one Price and queues a new Pending Task. obstacle
+// is the Agent's description of what the Solver is to clear, or empty.
 // It returns *ledger.InsufficientError when available Balance is below the Price.
-func (l *Lifecycle) Create(ctx context.Context, customerID, pageURL string) (Created, error) {
+func (l *Lifecycle) Create(ctx context.Context, customerID, pageURL, obstacle string) (Created, error) {
 	now := time.Now()
 	c := Created{
 		ID:            secret.New("tsk_"),
@@ -148,12 +152,12 @@ func (l *Lifecycle) Create(ctx context.Context, customerID, pageURL string) (Cre
 	_, err := l.commit(ctx, func(tx *sql.Tx) (*Event, error) {
 		// Insert first: the Hold references the Task id.
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO tasks (id, customer_id, page_url, state, session_token_hash, created_at, claim_deadline)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			c.ID, customerID, pageURL, Pending, secret.Hash(c.SessionToken), now.UnixMilli(), c.ClaimDeadline.UnixMilli()); err != nil {
+			`INSERT INTO tasks (id, customer_id, page_url, obstacle, state, session_token_hash, created_at, claim_deadline)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.ID, customerID, pageURL, obstacle, Pending, secret.Hash(c.SessionToken), now.UnixMilli(), c.ClaimDeadline.UnixMilli()); err != nil {
 			return nil, fmt.Errorf("insert task: %w", err)
 		}
-		return &Event{TaskID: c.ID, State: Pending, PageURL: pageURL, CreatedAt: now},
+		return &Event{TaskID: c.ID, State: Pending, PageURL: pageURL, Obstacle: obstacle, CreatedAt: now},
 			ledger.Hold(ctx, tx, customerID, c.ID, l.cfg.Price)
 	})
 	if err != nil {
@@ -271,7 +275,7 @@ func release(ctx context.Context) func(*sql.Tx, *Event) error {
 // reports every Pending Task so the Queue is rebuilt.
 func (l *Lifecycle) Resume(ctx context.Context) error {
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT id, state, page_url, created_at, claim_deadline, solve_deadline FROM tasks
+		`SELECT id, state, page_url, obstacle, created_at, claim_deadline, solve_deadline FROM tasks
 		 WHERE state IN (?, ?) ORDER BY created_at`, Pending, Claimed)
 	if err != nil {
 		return fmt.Errorf("resume: %w", err)
@@ -285,7 +289,7 @@ func (l *Lifecycle) Resume(ctx context.Context) error {
 		var t live
 		var created int64
 		var solveDeadline sql.NullInt64
-		if err := rows.Scan(&t.TaskID, &t.State, &t.PageURL, &created, &t.claimDeadline, &solveDeadline); err != nil {
+		if err := rows.Scan(&t.TaskID, &t.State, &t.PageURL, &t.Obstacle, &created, &t.claimDeadline, &solveDeadline); err != nil {
 			rows.Close()
 			return fmt.Errorf("resume: %w", err)
 		}
@@ -342,9 +346,9 @@ func (l *Lifecycle) ClaimOf(ctx context.Context, wallet string) (e Event, ok boo
 	e = Event{State: Claimed, SolverWallet: wallet}
 	var created, solveDeadline int64
 	err = l.db.QueryRowContext(ctx,
-		`SELECT id, page_url, created_at, solve_deadline FROM tasks
+		`SELECT id, page_url, obstacle, created_at, solve_deadline FROM tasks
 		 WHERE solver_wallet = ? AND state = ? AND solve_deadline > ?`,
-		wallet, Claimed, time.Now().UnixMilli()).Scan(&e.TaskID, &e.PageURL, &created, &solveDeadline)
+		wallet, Claimed, time.Now().UnixMilli()).Scan(&e.TaskID, &e.PageURL, &e.Obstacle, &created, &solveDeadline)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, false, nil
 	}

@@ -10,3 +10,10 @@ pay-account-*.json
 # Browser automation output
 .playwright-mcp/
 node_modules/
+.venv/
+__pycache__/
+
+# Local secrets: Overpass API key and the demo launcher (holds a model API key).
+.overpass-key
+client_start.sh
+jev_start.sh

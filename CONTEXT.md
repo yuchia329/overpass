@@ -45,7 +45,7 @@ Funds reserved from a Customer's available Balance for one Task; later captured 
 _Avoid_: deduction, charge, refund
 
 **Challenge**:
-The obstacle blocking an Agent's page that needs a human (reCAPTCHA, slider puzzle, etc.).
+The obstacle blocking an Agent's page that needs a human (reCAPTCHA, slider puzzle, etc.). The Agent may describe it in one sentence when it creates the Task (the Task's `obstacle`); Solvers see that before they Claim, and it is the whole scope of their work: the Agent does the rest itself.
 _Avoid_: captcha (too narrow), blocker
 
 **Session**:
@@ -70,8 +70,11 @@ How long a Task may wait in the Queue before it Expires.
 **Solve window**:
 How long a Solver has after Claim before the Task Fails.
 
+**Done**:
+The Solver's report that the Challenge is cleared. The Agent takes the page back and checks it with its verify check; if the Challenge is still there, the Solver is told so and keeps the page.
+
 **Solved**:
-Task outcome where the Bridge confirmed the Challenge is cleared, using the Agent's cleared check (reCAPTCHA check by default). The only outcome that captures the Hold.
+Task outcome where the Bridge confirmed the Challenge is cleared: by the Agent's cleared check (reCAPTCHA check by default), or by its verify check after the Solver's Done. The only outcome that captures the Hold.
 
 **Expired**:
 Task outcome where no Solver claimed it within the claim window.

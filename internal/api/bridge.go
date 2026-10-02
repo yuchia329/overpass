@@ -85,9 +85,17 @@ func (s *Server) bridgeMessage(m session.ToBridge) map[string]any {
 	if m.Offer != "" {
 		return map[string]any{"type": "rtc_offer", "sdp": m.Offer}
 	}
+	if m.Done {
+		return map[string]any{"type": "done"}
+	}
 	if in := m.Input; in != nil {
-		if in.Type == "wheel" {
+		switch in.Type {
+		case "wheel":
 			return map[string]any{"type": "wheel", "x": in.X, "y": in.Y, "dx": in.DX, "dy": in.DY, "t": in.T}
+		case "text":
+			return map[string]any{"type": "text", "text": in.Text, "t": in.T}
+		case "key":
+			return map[string]any{"type": "key", "key": in.Key, "t": in.T}
 		}
 		return map[string]any{"type": "pointer", "action": in.Action, "x": in.X, "y": in.Y, "t": in.T}
 	}
@@ -142,6 +150,9 @@ func (s *Server) readBridge(ctx context.Context, conn *websocket.Conn, b *sessio
 			if len(msg.SDP) <= maxSDP {
 				s.relay.Answer(b, msg.SDP)
 			}
+		case "not_cleared":
+			// The Agent checked after the Solver's done: the obstacle is still there.
+			s.relay.NotCleared(b)
 		case "solved":
 			// The outcome reaches the Bridge as an Event. A Solved report on a
 			// Task that already ended is a no-op: the first outcome is final.
