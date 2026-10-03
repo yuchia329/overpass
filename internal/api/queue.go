@@ -14,10 +14,10 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
-	"github.com/yuchia329/overpass/internal/queue"
-	"github.com/yuchia329/overpass/internal/session"
-	"github.com/yuchia329/overpass/internal/solana"
-	"github.com/yuchia329/overpass/internal/task"
+	"github.com/yuchia329/unstuck/internal/queue"
+	"github.com/yuchia329/unstuck/internal/session"
+	"github.com/yuchia329/unstuck/internal/solana"
+	"github.com/yuchia329/unstuck/internal/task"
 )
 
 const queueWriteTimeout = 5 * time.Second

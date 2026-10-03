@@ -1,4 +1,4 @@
-// Overpass Bridge: hands a blocked Playwright page to a human Solver and
+// Unstuck Bridge: hands a blocked Playwright page to a human Solver and
 // returns once the page's Challenge is cleared.
 //
 // The Bridge only starts when the Agent calls solve(). It streams the page
@@ -18,9 +18,9 @@ import { type FrameMetadata, toViewport, wheelToViewport } from "./viewport.ts";
 export type ClearedCheck = (page: Page) => Promise<boolean>;
 
 export interface SolveOptions {
-  /** The Customer's API key. Defaults to $OVERPASS_API_KEY. */
+  /** The Customer's API key. Defaults to $UNSTUCK_API_KEY. */
   apiKey?: string;
-  /** The Overpass backend. Defaults to $OVERPASS_URL, then http://localhost:8080. */
+  /** The Unstuck backend. Defaults to $UNSTUCK_URL, then http://localhost:8080. */
   url?: string;
   /** Reports when the Challenge is cleared. Defaults to a reCAPTCHA check. */
   cleared?: ClearedCheck;
@@ -44,12 +44,12 @@ export interface SolveOptions {
   p2p?: boolean;
 }
 
-export class OverpassError extends Error {
-  override name = "OverpassError";
+export class UnstuckError extends Error {
+  override name = "UnstuckError";
 }
 
 /** Task creation was refused: available Balance is below the Price. */
-export class InsufficientBalanceError extends OverpassError {
+export class InsufficientBalanceError extends UnstuckError {
   override name = "InsufficientBalanceError";
   constructor(
     readonly available: number,
@@ -57,28 +57,28 @@ export class InsufficientBalanceError extends OverpassError {
     readonly serviceWallet: string,
   ) {
     super(
-      `Overpass: insufficient balance: ${usdc(available)} USDC available, the Price of a Task is ${usdc(price)} USDC. ` +
+      `Unstuck: insufficient balance: ${usdc(available)} USDC available, the Price of a Task is ${usdc(price)} USDC. ` +
         `Deposit USDC on Solana mainnet from your registered wallet to ${serviceWallet}.`,
     );
   }
 }
 
 /** No Solver claimed the Task within the claim window. */
-export class TaskExpiredError extends OverpassError {
+export class TaskExpiredError extends UnstuckError {
   override name = "TaskExpiredError";
   constructor(readonly taskId: string) {
-    super(`Overpass: Task ${taskId} Expired: no Solver claimed it in time.`);
+    super(`Unstuck: Task ${taskId} Expired: no Solver claimed it in time.`);
   }
 }
 
 /** The Task was claimed but not Solved. */
-export class TaskFailedError extends OverpassError {
+export class TaskFailedError extends UnstuckError {
   override name = "TaskFailedError";
   constructor(
     readonly taskId: string,
     readonly reason: string,
   ) {
-    super(`Overpass: Task ${taskId} Failed (${reason}).`);
+    super(`Unstuck: Task ${taskId} Failed (${reason}).`);
   }
 }
 
@@ -114,9 +114,9 @@ type Notice =
  * click targets large.
  */
 export async function solve(page: Page, options: SolveOptions = {}): Promise<void> {
-  const base = (options.url ?? process.env.OVERPASS_URL ?? "http://localhost:8080").replace(/\/$/, "");
-  const apiKey = options.apiKey ?? process.env.OVERPASS_API_KEY;
-  if (!apiKey) throw new OverpassError("Overpass: no API key; pass apiKey or set OVERPASS_API_KEY.");
+  const base = (options.url ?? process.env.UNSTUCK_URL ?? "http://localhost:8080").replace(/\/$/, "");
+  const apiKey = options.apiKey ?? process.env.UNSTUCK_API_KEY;
+  if (!apiKey) throw new UnstuckError("Unstuck: no API key; pass apiKey or set UNSTUCK_API_KEY.");
   const cleared = options.cleared ?? recaptchaCleared;
   const verify = options.verify ?? cleared;
   const p2p = options.p2p ?? true;
@@ -159,7 +159,7 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
       await replay.release();
       ok = await verify(page);
     } catch (err) {
-      console.warn("Overpass: verify:", err);
+      console.warn("Unstuck: verify:", err);
     }
     checking = false;
     if (reported) return;
@@ -173,7 +173,7 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
     // is reported, nothing queued lands.
     inputs = inputs
       .then(() => (reported ? undefined : replay.apply(shown, m)))
-      .catch((err) => console.warn("Overpass: input:", err));
+      .catch((err) => console.warn("Unstuck: input:", err));
   };
   let claim: { peerToken: string; iceServers: IceServer[] } | undefined;
   let offered: Peer | undefined; // the newest peer, answered but maybe not ready
@@ -223,7 +223,7 @@ export async function solve(page: Page, options: SolveOptions = {}): Promise<voi
         screencast.start().catch(reject);
       };
       socket.onerror = () => {}; // onclose follows and settles
-      // Overpass Fails a claimed Task whose Bridge disconnects.
+      // Unstuck Fails a claimed Task whose Bridge disconnects.
       socket.onclose = () => reject(new TaskFailedError(task.task_id, "bridge_disconnected"));
       socket.onmessage = (e) => {
         const m = JSON.parse(String(e.data)) as Notice;
@@ -285,7 +285,7 @@ async function createTask(base: string, apiKey: string, pageURL: string, obstacl
     throw new InsufficientBalanceError(Number(body.available), Number(body.price), String(body.service_wallet));
   }
   if (res.status !== 201) {
-    throw new OverpassError(`Overpass: creating the Task failed: HTTP ${res.status} ${String(body.error ?? "")}`);
+    throw new UnstuckError(`Unstuck: creating the Task failed: HTTP ${res.status} ${String(body.error ?? "")}`);
   }
   return body as { task_id: string; session_token: string };
 }

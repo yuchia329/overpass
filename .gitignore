@@ -1,6 +1,7 @@
 *.db
 *.db-shm
 *.db-wal
+/unstuck
 /overpass
 
 # Solana keypair files hold private keys; never commit them.
@@ -13,7 +14,11 @@ node_modules/
 .venv/
 __pycache__/
 
-# Local secrets: Overpass API key and the demo launcher (holds a model API key).
+# Local secrets: the Unstuck API key (.overpass-key from before the rename) and the demo launcher (holds a model API key).
+.unstuck-key
 .overpass-key
 client_start.sh
 jev_start.sh
+
+# macOS Finder metadata
+.DS_Store

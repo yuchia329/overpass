@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/api"
+	"github.com/yuchia329/unstuck/internal/api"
 )
 
 func TestQueuePageLoadsFromBackend(t *testing.T) {

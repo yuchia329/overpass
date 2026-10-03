@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/secret"
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/secret"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 // Schema is the payout module's part of the database schema.
@@ -181,7 +181,7 @@ func (s *Service) Challenge(ctx context.Context, wallet string) (Challenge, erro
 	}
 	now := time.Now()
 	c := Challenge{Nonce: secret.New(""), ExpiresAt: now.Add(s.cfg.ChallengeTTL)}
-	c.Message = fmt.Sprintf("Overpass: withdraw all my available Earnings to this Solana wallet.\n\nWallet: %s\nNonce: %s\nIssued At: %s\nExpires At: %s",
+	c.Message = fmt.Sprintf("Unstuck: withdraw all my available Earnings to this Solana wallet.\n\nWallet: %s\nNonce: %s\nIssued At: %s\nExpires At: %s",
 		wallet, c.Nonce, now.UTC().Format(time.RFC3339), c.ExpiresAt.UTC().Format(time.RFC3339))
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM withdrawal_challenges WHERE expires_at <= ?`, now.UnixMilli()); err != nil {
 		return Challenge{}, fmt.Errorf("prune withdrawal challenges: %w", err)

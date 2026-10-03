@@ -10,8 +10,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/yuchia329/overpass/internal/secret"
-	"github.com/yuchia329/overpass/internal/task"
+	"github.com/yuchia329/unstuck/internal/secret"
+	"github.com/yuchia329/unstuck/internal/task"
 )
 
 const (

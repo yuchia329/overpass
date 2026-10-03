@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/api"
+	"github.com/yuchia329/unstuck/internal/api"
 )
 
 func TestCreateTaskHoldsExactlyOnePrice(t *testing.T) {
@@ -245,7 +245,7 @@ func TestInvalidConfigIsRejectedAtStartup(t *testing.T) {
 	}
 	for i, mutate := range bad {
 		cfg := api.Config{
-			DBPath:        t.TempDir() + "/overpass.db",
+			DBPath:        t.TempDir() + "/unstuck.db",
 			ClaimWindow:   time.Second,
 			SolveWindow:   time.Second,
 			Price:         testPrice,

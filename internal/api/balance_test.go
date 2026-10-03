@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/yuchia329/overpass/internal/api"
+	"github.com/yuchia329/unstuck/internal/api"
 )
 
 func TestNewCustomerHasZeroBalance(t *testing.T) {
@@ -67,7 +67,7 @@ func TestAuthenticatedEndpointsRejectMissingOrInvalidAPIKey(t *testing.T) {
 		{"POST", "/v1/tasks"},
 	}
 	for _, e := range endpoints {
-		for _, key := range []string{"", "op_wrong"} {
+		for _, key := range []string{"", "unstuck_wrong"} {
 			res := h.do(e.method, e.path, key, map[string]any{"amount": 1, "page_url": "https://example.com"})
 			if res.status != http.StatusUnauthorized {
 				t.Errorf("%s %s with key %q: status = %d, want 401", e.method, e.path, key, res.status)

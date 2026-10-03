@@ -13,19 +13,20 @@ x86_64) goarch=amd64 ;;
 esac
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
-CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -o "$out/overpass" ./cmd/overpass
+CGO_ENABLED=0 GOOS=linux GOARCH=$goarch go build -o "$out/unstuck" ./cmd/unstuck
 
 # A private directory, so no other user on the instance can swap the files.
 dir=$(ssh "$host" mktemp -d)
-scp -q "$out/overpass" deploy/overpass.service deploy/ingress.yaml "$host:$dir/"
+scp -q "$out/unstuck" deploy/unstuck.service deploy/ingress.yaml deploy/migrate-from-overpass.sh "$host:$dir/"
 ssh "$host" "dir=$dir"'
 set -eu
 trap "rm -rf $dir" EXIT
-sudo install -m 755 "$dir/overpass" /usr/local/bin/overpass
-sudo install -m 644 "$dir/overpass.service" /etc/systemd/system/overpass.service
+sudo sh "$dir/migrate-from-overpass.sh"
+sudo install -m 755 "$dir/unstuck" /usr/local/bin/unstuck
+sudo install -m 644 "$dir/unstuck.service" /etc/systemd/system/unstuck.service
 sudo systemctl daemon-reload
-sudo systemctl enable -q overpass
-sudo systemctl restart overpass
+sudo systemctl enable -q unstuck
+sudo systemctl restart unstuck
 sudo k3s kubectl apply -f "$dir/ingress.yaml"
-systemctl --no-pager --lines=5 status overpass
+systemctl --no-pager --lines=5 status unstuck
 '

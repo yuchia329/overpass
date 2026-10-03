@@ -1,4 +1,4 @@
-// Drives solve() against a fake Overpass backend and a real headless
+// Drives solve() against a fake Unstuck backend and a real headless
 // Chromium, playing the Solver's side of the Bridge socket by hand.
 
 import assert from "node:assert/strict";
@@ -8,7 +8,7 @@ import { after, before, test } from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
 
 import { solve, type SolveOptions } from "../src/index.ts";
-import { type Bridge, fakeOverpass } from "./fake-overpass.ts";
+import { type Bridge, fakeUnstuck } from "./fake-unstuck.ts";
 
 const VIEWPORT = { width: 640, height: 480 };
 
@@ -108,11 +108,11 @@ async function claimedSession(
   afterReport?: (page: Page, bridge: Bridge) => Promise<void>,
 ) {
   const page = await open(path);
-  const overpass = await fakeOverpass();
-  const solving = solve(page, { ...options, apiKey: "key", url: overpass.url });
+  const unstuck = await fakeUnstuck();
+  const solving = solve(page, { ...options, apiKey: "key", url: unstuck.url });
   solving.catch(() => {}); // awaited below unless the test fails first
   try {
-    const bridge = await overpass.bridge;
+    const bridge = await unstuck.bridge;
     bridge.send({ type: "claimed", solve_deadline: new Date(Date.now() + 60_000).toISOString() });
     await solver(page, bridge);
     await bridge.next("solved", 3_000);
@@ -120,7 +120,7 @@ async function claimedSession(
     bridge.send({ type: "solved" });
     await solving;
   } finally {
-    await overpass.close();
+    await unstuck.close();
     await page.close();
   }
 }
@@ -168,10 +168,10 @@ test("a button the Solver still holds is released when the Agent takes over", as
   const cleared = async (p: Page) => (await counts(p)).downs >= 1;
   let after: ClickWindow | undefined;
   const page = await open("/clicks");
-  const overpass = await fakeOverpass();
+  const unstuck = await fakeUnstuck();
   try {
-    const solving = solve(page, { cleared, apiKey: "key", url: overpass.url });
-    const bridge = await overpass.bridge;
+    const solving = solve(page, { cleared, apiKey: "key", url: unstuck.url });
+    const bridge = await unstuck.bridge;
     bridge.send({ type: "claimed", solve_deadline: new Date(Date.now() + 60_000).toISOString() });
     bridge.send({ type: "pointer", action: "down", x: 0.5, y: 0.5, t: 0 }); // a drag, cut short
     await bridge.next("solved", 3_000);
@@ -179,7 +179,7 @@ test("a button the Solver still holds is released when the Agent takes over", as
     await solving;
     after = await counts(page);
   } finally {
-    await overpass.close();
+    await unstuck.close();
     await page.close();
   }
   assert.deepEqual(after, { clicks: 1, downs: 1, ups: 1 });
@@ -187,37 +187,37 @@ test("a button the Solver still holds is released when the Agent takes over", as
 
 test("solve creates the Task with the Agent's description of the obstacle", async () => {
   const page = await open("/clicks");
-  const overpass = await fakeOverpass();
+  const unstuck = await fakeUnstuck();
   try {
     const solving = solve(page, {
       obstacle: "Pass the check on this page.",
       cleared: async () => true,
       apiKey: "key",
-      url: overpass.url,
+      url: unstuck.url,
     });
-    assert.equal((await overpass.task).obstacle, "Pass the check on this page.");
-    const bridge = await overpass.bridge;
+    assert.equal((await unstuck.task).obstacle, "Pass the check on this page.");
+    const bridge = await unstuck.bridge;
     bridge.send({ type: "claimed", solve_deadline: new Date(Date.now() + 60_000).toISOString() });
     await bridge.next("solved", 3_000);
     bridge.send({ type: "solved" });
     await solving;
   } finally {
-    await overpass.close();
+    await unstuck.close();
     await page.close();
   }
 });
 
 test("a Solver's done is checked by verify: not cleared leaves the page with the Solver", async () => {
   const page = await open("/clicks");
-  const overpass = await fakeOverpass();
+  const unstuck = await fakeUnstuck();
   let checks = 0;
   const verify = async (p: Page) => {
     checks++;
     return (await counts(p)).clicks >= 1;
   };
   try {
-    const solving = solve(page, { cleared: async () => false, verify, apiKey: "key", url: overpass.url });
-    const bridge = await overpass.bridge;
+    const solving = solve(page, { cleared: async () => false, verify, apiKey: "key", url: unstuck.url });
+    const bridge = await unstuck.bridge;
     bridge.send({ type: "claimed", solve_deadline: new Date(Date.now() + 60_000).toISOString() });
 
     bridge.send({ type: "done" }); // too early: nothing clicked yet
@@ -232,7 +232,7 @@ test("a Solver's done is checked by verify: not cleared leaves the page with the
     bridge.send({ type: "solved" });
     await solving;
   } finally {
-    await overpass.close();
+    await unstuck.close();
     await page.close();
   }
 });

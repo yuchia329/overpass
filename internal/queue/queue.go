@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/task"
+	"github.com/yuchia329/unstuck/internal/task"
 )
 
 // subBuffer is how many messages a Solver may fall behind before it is dropped.

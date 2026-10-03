@@ -17,8 +17,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
-	"github.com/yuchia329/overpass/internal/api"
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/api"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 const (
@@ -56,7 +56,7 @@ type harness struct {
 func newHarness(t *testing.T, mutate ...func(*api.Config)) *harness {
 	t.Helper()
 	cfg := api.Config{
-		DBPath:        filepath.Join(t.TempDir(), "overpass.db"),
+		DBPath:        filepath.Join(t.TempDir(), "unstuck.db"),
 		ClaimWindow:   100 * time.Millisecond,
 		SolveWindow:   100 * time.Millisecond,
 		Price:         testPrice,

@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 
 import type { ClearedCheck } from "../src/index.ts";
 
-const OVERPASS_URL = (process.env.OVERPASS_URL ?? "http://localhost:8080").replace(/\/$/, "");
+const UNSTUCK_URL = (process.env.UNSTUCK_URL ?? "http://localhost:8080").replace(/\/$/, "");
 
 // Reports whether the page holds a CAPTCHA token: from the widget's API, or
 // from the hidden response field reCAPTCHA and hCaptcha fill in on success.
@@ -30,8 +30,8 @@ export function captchaCleared(blockedUrl: string): ClearedCheck {
 }
 
 export async function balance(): Promise<string> {
-  const res = await fetch(`${OVERPASS_URL}/v1/balance`, {
-    headers: { Authorization: `Bearer ${process.env.OVERPASS_API_KEY}` },
+  const res = await fetch(`${UNSTUCK_URL}/v1/balance`, {
+    headers: { Authorization: `Bearer ${process.env.UNSTUCK_API_KEY}` },
   });
   if (!res.ok) return "unknown";
   const { available } = (await res.json()) as { available: number };

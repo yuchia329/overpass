@@ -1,4 +1,4 @@
-# Overpass
+# Unstuck
 
 **A human unblocks your AI Agent when its browser gets stuck.**
 
@@ -9,7 +9,7 @@ desktop, and clears the Challenge. The Agent then carries on. The Customer
 pays 0.01 USDC per solved Task from a prepaid Balance on Solana.
 
 ```ts
-import { solve } from "@overpass/bridge";
+import { solve } from "@unstuck/bridge";
 
 await page.goto("https://example.com/login");
 await solve(page); // returns once a human has cleared the Challenge
@@ -34,9 +34,9 @@ Terms like Task, Hold and Session have exact meanings here. See
 
 ### The three people involved
 
-| Who          | What they do                                                    | How they talk to Overpass                   |
+| Who          | What they do                                                    | How they talk to Unstuck                    |
 | ------------ | --------------------------------------------------------------- | ------------------------------------------- |
-| **Customer** | Owns the Agent. Registers a Solana wallet and prepays USDC.     | API key (`op_...`)                          |
+| **Customer** | Owns the Agent. Registers a Solana wallet and prepays USDC.     | API key (`unstuck_...`)                     |
 | **Agent**    | The Customer's Playwright program. Embeds the Bridge SDK.       | `solve(page)` from the Bridge SDK           |
 | **Solver**   | A human who clears Challenges and earns USDC.                   | Queue page in a browser, identified by wallet |
 
@@ -46,7 +46,7 @@ Terms like Task, Hold and Session have exact meanings here. See
 sequenceDiagram
     autonumber
     participant A as Agent + Bridge
-    participant B as Overpass backend
+    participant B as Unstuck backend
     participant S as Solver (Queue page)
 
     A->>B: POST /v1/tasks (API key)
@@ -123,7 +123,7 @@ flowchart LR
     SW -. "backend polls every 5s" .-> BAL[Customer Balance<br/>available + held]
     BAL -- "Task created" --> H[Hold: 0.01 USDC]
     H -- Solved --> E[Solver Earning 0.008]
-    H -- Solved --> F[Overpass Fee 0.002]
+    H -- Solved --> F[Unstuck Fee 0.002]
     H -- "Expired / Failed" --> BAL
     E -- "Withdrawal (Solver signs in MetaMask)" --> HW[Hot wallet]
     HW -- "USDC on Solana" --> SOL[Solver wallet]
@@ -164,13 +164,13 @@ flowchart TB
         BR -- "CDP screencast +<br/>page.mouse" --> CH
     end
 
-    subgraph Backend ["Overpass backend (Go, cmd/overpass)"]
+    subgraph Backend ["Unstuck backend (Go, cmd/unstuck)"]
         API[HTTP API<br/>internal/api]
         Q[Queue + Claim<br/>internal/queue]
         SE[Session relay<br/>internal/session]
         LE[Ledger: Balance, Holds<br/>internal/ledger]
         DE[Deposit poller<br/>internal/deposit]
-        DB[(SQLite<br/>overpass.db)]
+        DB[(SQLite<br/>unstuck.db)]
         WEB[Queue page<br/>internal/web/static]
         API --- Q & SE & LE
         LE --- DB
@@ -202,7 +202,7 @@ flowchart TB
 | **Ledger**         | [internal/ledger/](internal/ledger/) | Balances, Holds, capture and release.                                               |
 | **Deposit poller** | [internal/deposit/](internal/deposit/) | Polls Solana for USDC sent to the service wallet and credits Balances.          |
 | **Queue page**     | [internal/web/static/](internal/web/static/) | Solver UI: connect a wallet, claim, see the page, send taps and drags.     |
-| **Register CLI**   | [cmd/overpass-register/](cmd/overpass-register/) | Signs the registration challenge with a Solana keypair file and prints the API key. |
+| **Register CLI**   | [cmd/unstuck-register/](cmd/unstuck-register/) | Signs the registration challenge with a Solana keypair file and prints the API key. |
 
 ### Two ways frames travel
 
@@ -245,8 +245,8 @@ Amounts are USDC base units: 1 USDC = 1,000,000.
 ## Repository layout
 
 ```
-cmd/overpass/            Go backend entry point
-cmd/overpass-register/   CLI that registers a Customer with a keypair file
+cmd/unstuck/            Go backend entry point
+cmd/unstuck-register/   CLI that registers a Customer with a keypair file
 internal/                Backend packages (api, queue, session, ledger, deposit, ...)
 internal/web/static/     Queue page (plain HTML + JS)
 bridge/src/              Bridge SDK (TypeScript)
@@ -287,34 +287,34 @@ Then start the backend in one of two modes.
 **With real USDC Deposits.** The backend polls Solana mainnet every 5s:
 
 ```sh
-go run ./cmd/overpass -claim-window 30s -solve-window 60s
+go run ./cmd/unstuck -claim-window 30s -solve-window 60s
 ```
 
 **Without real USDC.** Deposit polling is off and free dev credit is on:
 
 ```sh
-go run ./cmd/overpass -claim-window 30s -solve-window 60s -dev -rpc-url ""
+go run ./cmd/unstuck -claim-window 30s -solve-window 60s -dev -rpc-url ""
 ```
 
-State lives in `overpass.db` in the current directory (change it with
+State lives in `unstuck.db` in the current directory (change it with
 `-db path`). Reuse the same file and your registration and Balance carry
 over.
 
 ### 2. Register the Customer (once per database)
 
 The pay CLI cannot sign messages, so export the keypair and let
-`overpass-register` sign the challenge:
+`unstuck-register` sign the challenge:
 
 ```sh
 pay account export local                      # writes ./pay-account-local-<pubkey>.json
-go run ./cmd/overpass-register -keypair ./pay-account-local-*.json
+go run ./cmd/unstuck-register -keypair ./pay-account-local-*.json
 rm ./pay-account-local-*.json                  # it holds the private key
 ```
 
 It prints the API key once. Export it in every terminal that runs an Agent:
 
 ```sh
-export OVERPASS_API_KEY=op_...
+export UNSTUCK_API_KEY=unstuck_...
 ```
 
 ### 3. Fund the Balance
@@ -332,14 +332,14 @@ the amount instead.
 **Dev credit.** Works only when the backend runs with `-dev`:
 
 ```sh
-curl -X POST -H "Authorization: Bearer $OVERPASS_API_KEY" \
+curl -X POST -H "Authorization: Bearer $UNSTUCK_API_KEY" \
   -d '{"amount":100000}' http://localhost:8080/v1/dev/credit
 ```
 
 Check the Balance:
 
 ```sh
-curl -H "Authorization: Bearer $OVERPASS_API_KEY" http://localhost:8080/v1/balance
+curl -H "Authorization: Bearer $UNSTUCK_API_KEY" http://localhost:8080/v1/balance
 ```
 
 ### 4. Open the tunnel (terminal 2)
@@ -383,7 +383,7 @@ wallet before the solve window ends. The Session resumes.
 Options:
 
 - No browser window: `HEADLESS=1 npm run demo`
-- Another backend: `OVERPASS_URL=https://… npm run demo`
+- Another backend: `UNSTUCK_URL=https://… npm run demo`
 
 ### A fast browser agent: Jev Ultrafast
 
@@ -406,11 +406,11 @@ Needs [uv](https://docs.astral.sh/uv/), a TypeSafe key
 
 ```sh
 cd bridge
-TYPESAFE_API_KEY=… GEMINI_API_KEY=… OVERPASS_API_KEY=… npm run demo:jev
+TYPESAFE_API_KEY=… GEMINI_API_KEY=… UNSTUCK_API_KEY=… npm run demo:jev
 ```
 
 The first run launches a separate Chrome with its own profile in
-`~/.overpass/jev-chrome` and a debugging port on 9335. Leave it open between
+`~/.unstuck/jev-chrome` and a debugging port on 9335. Leave it open between
 runs. Your everyday Chrome would ask "Allow remote debugging?" each time the
 Bridge connects. Set `AGENT_URL` and `AGENT_TASK` for another site.
 
@@ -420,7 +420,7 @@ same page, so `480x720` gives a Solver on a phone bigger image tiles to tap.
 
 ## Run the demo against the public backend
 
-The backend runs at `https://overpass.yuchia.dev` on the `hubstream` EC2
+The backend runs at `https://unstuck.yuchia.dev` on the `hubstream` EC2
 instance. The Agent stays on the laptop; the Solver uses a phone or iPad over
 the internet.
 
@@ -429,8 +429,8 @@ flowchart LR
     AG[Agent on laptop] -- HTTPS / WSS --> CF[Cloudflare<br/>TLS, *.yuchia.dev]
     PH[Solver phone] -- HTTPS / WSS --> CF
     CF -- "TLS (SSL mode Full)" --> TR[k3s Traefik<br/>websecure only]
-    TR --> OV["overpass (systemd)<br/>10.42.0.1:8080"]
-    OV --> DB[(/var/lib/overpass/overpass.db)]
+    TR --> OV["unstuck (systemd)<br/>10.42.0.1:8080"]
+    OV --> DB[(/var/lib/unstuck/unstuck.db)]
 ```
 
 ### 1. Deploy
@@ -439,17 +439,17 @@ flowchart LR
 deploy/deploy.sh hubstream
 ```
 
-This cross-compiles `cmd/overpass` for the instance, installs the binary and
+This cross-compiles `cmd/unstuck` for the instance, installs the binary and
 systemd unit, restarts the service and applies the Ingress. The database is
-kept. Follow logs with `ssh hubstream journalctl -u overpass -f`.
+kept. Follow logs with `ssh hubstream journalctl -u unstuck -f`.
 
 ### 2. Register the Customer (once per database)
 
 ```sh
 pay account export local
-go run ./cmd/overpass-register -server https://overpass.yuchia.dev -keypair ./pay-account-local-*.json
+go run ./cmd/unstuck-register -server https://unstuck.yuchia.dev -keypair ./pay-account-local-*.json
 rm ./pay-account-local-*.json
-export OVERPASS_API_KEY=op_...
+export UNSTUCK_API_KEY=unstuck_...
 ```
 
 The instance has its own database. On registration it credits every earlier
@@ -460,17 +460,17 @@ Deposit from that wallet, even ones already spent against a local database.
 Make a real Deposit as in [local step 3](#3-fund-the-balance), then:
 
 ```sh
-curl -H "Authorization: Bearer $OVERPASS_API_KEY" https://overpass.yuchia.dev/v1/balance
+curl -H "Authorization: Bearer $UNSTUCK_API_KEY" https://unstuck.yuchia.dev/v1/balance
 ```
 
 ### 4. Run the Agent and solve
 
 ```sh
 cd bridge
-OVERPASS_URL=https://overpass.yuchia.dev npm run demo:recaptcha
+UNSTUCK_URL=https://unstuck.yuchia.dev npm run demo:recaptcha
 ```
 
-Open `https://overpass.yuchia.dev` on the phone, connect with the Solver's
+Open `https://unstuck.yuchia.dev` on the phone, connect with the Solver's
 wallet, and Claim within 30s. The public backend gives the Solver 5 minutes
 to clear the Challenge.
 
@@ -483,7 +483,7 @@ to clear the Challenge.
   uses Traefik's `websecure` entrypoint only, so the API key and session
   token never cross the internet in cleartext.
 - **Not reachable directly.** The service
-  ([deploy/overpass.service](deploy/overpass.service)) listens on the k3s pod
+  ([deploy/unstuck.service](deploy/unstuck.service)) listens on the k3s pod
   bridge address `10.42.0.1:8080`. Traefik, the host and pods can reach it;
   the internet cannot. The instance's `cni0` must be `10.42.0.1`, the k3s
   default.
@@ -491,24 +491,30 @@ to clear the Challenge.
   real Deposits.
 - **Keepalive pings.** The backend pings every socket every 20s. Cloudflare
   closes WebSockets idle for 100s, and a still page sends no frames.
+- **Renamed from Overpass.** On an instance still running `overpass.service`,
+  `deploy.sh` first runs
+  [deploy/migrate-from-overpass.sh](deploy/migrate-from-overpass.sh): it stops
+  the old service, copies its state to `/var/backups/overpass-<time>`, moves
+  the database to `/var/lib/unstuck/unstuck.db`, and removes the old unit and
+  the `overpass` Ingress. Later deploys skip it.
 - **Keep Traefik's access log off.** The Bridge's session token is in its
   WebSocket URL.
 - **Withdrawals need the hot wallet's key.** Put the keypair at
-  `/etc/overpass/payout-keypair.json` (owner root, mode 600) and hand it to the
+  `/etc/unstuck/payout-keypair.json` (owner root, mode 600) and hand it to the
   service as a systemd credential: add
-  `LoadCredential=payout-keypair:/etc/overpass/payout-keypair.json` and
+  `LoadCredential=payout-keypair:/etc/unstuck/payout-keypair.json` and
   `-payout-keypair ${CREDENTIALS_DIRECTORY}/payout-keypair` to
-  [deploy/overpass.service](deploy/overpass.service). The service runs as a
+  [deploy/unstuck.service](deploy/unstuck.service). The service runs as a
   dynamic user, which can read only that copy.
 
 ## Configuration
 
-Flags for `cmd/overpass`:
+Flags for `cmd/unstuck`:
 
 | Flag              | Default                               | Meaning                                              |
 | ----------------- | ------------------------------------- | ---------------------------------------------------- |
 | `-addr`           | `:8080`                               | Listen address                                       |
-| `-db`             | `overpass.db`                         | SQLite path                                          |
+| `-db`             | `unstuck.db`                         | SQLite path                                          |
 | `-claim-window`   | `60s`                                 | Time in the Queue before a Task Expires              |
 | `-solve-window`   | `120s`                                | Time after Claim before a Task Fails                 |
 | `-price`          | `10000`                               | USDC base units held per Task (0.01 USDC)            |
@@ -517,7 +523,7 @@ Flags for `cmd/overpass`:
 | `-poll-interval`  | `5s`                                  | Deposit poll interval                                |
 | `-ping-interval`  | `20s`                                 | WebSocket keepalive (0 turns it off)                 |
 | `-stun`           | `stun:stun.l.google.com:19302`        | STUN URLs for direct Sessions (empty for none)       |
-| `-turn`           | none                                  | TURN URLs; needs `$OVERPASS_TURN_SECRET` (coturn `static-auth-secret`) |
+| `-turn`           | none                                  | TURN URLs; needs `$UNSTUCK_TURN_SECRET` (coturn `static-auth-secret`) |
 | `-dev`            | off                                   | Turns on `POST /v1/dev/credit`                       |
 | `-payout-keypair` | none                                  | Hot wallet keypair file that pays Withdrawals (none turns them off); uses `-rpc-url` |
 | `-usdc-mint`      | mainnet USDC                          | Mint Withdrawals pay in                              |
@@ -528,8 +534,8 @@ Flags for `cmd/overpass`:
 
 | Option    | Default                                   | Meaning                                  |
 | --------- | ----------------------------------------- | ---------------------------------------- |
-| `apiKey`  | `$OVERPASS_API_KEY`                       | Customer API key                         |
-| `url`     | `$OVERPASS_URL`, then `http://localhost:8080` | Backend URL                          |
+| `apiKey`  | `$UNSTUCK_API_KEY`                       | Customer API key                         |
+| `url`     | `$UNSTUCK_URL`, then `http://localhost:8080` | Backend URL                          |
 | `cleared` | reCAPTCHA check                           | `(page) => Promise<boolean>`: is the page unblocked? Polled. |
 | `verify`  | `cleared`                                 | `(page) => Promise<boolean>`: run once when the Solver taps Done |
 | `obstacle`| none                                      | One sentence (at most 200 characters) naming the Challenge; Solvers see it before they Claim |

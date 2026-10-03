@@ -13,8 +13,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/secret"
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/secret"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 // Schema is the customers module's part of the database schema.
@@ -68,7 +68,7 @@ func (r *Registry) Challenge(ctx context.Context, wallet string) (Challenge, err
 	}
 	now := time.Now()
 	c := Challenge{Nonce: secret.New(""), ExpiresAt: now.Add(r.challengeTTL)}
-	c.Message = fmt.Sprintf("Overpass wants you to prove you own this Solana wallet.\n\nWallet: %s\nNonce: %s\nIssued At: %s\nExpires At: %s",
+	c.Message = fmt.Sprintf("Unstuck wants you to prove you own this Solana wallet.\n\nWallet: %s\nNonce: %s\nIssued At: %s\nExpires At: %s",
 		wallet, c.Nonce, now.UTC().Format(time.RFC3339), c.ExpiresAt.UTC().Format(time.RFC3339))
 	// Expired challenges are pruned here so the table stays small.
 	if _, err := r.db.ExecContext(ctx, `DELETE FROM challenges WHERE expires_at <= ?`, now.UnixMilli()); err != nil {
@@ -114,7 +114,7 @@ func (r *Registry) Register(ctx context.Context, wallet, nonce, signature string
 	}
 
 	proposedID := secret.New("cus_")
-	reg := Registered{APIKey: secret.New("op_")}
+	reg := Registered{APIKey: secret.New("unstuck_")}
 	// On conflict the existing row keeps its id and gets the new key hash.
 	err = r.db.QueryRowContext(ctx,
 		`INSERT INTO customers (id, wallet, api_key_hash, created_at) VALUES (?, ?, ?, ?)

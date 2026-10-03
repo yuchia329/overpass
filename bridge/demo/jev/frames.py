@@ -28,7 +28,7 @@ from jev_ultrafast.browser import READ_STATE, Browser, StalePage, fingerprint
 
 # Frame controls get node ids above the page's: frame k's node n is k * FRAME_NODES + n.
 FRAME_NODES = 1_000_000
-WORLD = "overpass-jev"
+WORLD = "unstuck-jev"
 
 # The frame element's content box on the page, and whether it is shown.
 OWNER_BOX = """function () {

@@ -1,4 +1,4 @@
-module github.com/yuchia329/overpass
+module github.com/yuchia329/unstuck
 
 go 1.26.3
 

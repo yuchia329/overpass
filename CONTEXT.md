@@ -1,11 +1,11 @@
-# Overpass
+# Unstuck
 
 Human-in-the-loop unblocking for AI agents. When an Agent hits a challenge it cannot pass (e.g. reCAPTCHA), a human Solver remotely controls the Agent's browser to clear it, paid from the Customer's prepaid balance.
 
 ## Language
 
 **Agent**:
-The Customer's automated browser program. Not part of Overpass; it only embeds the Bridge.
+The Customer's automated browser program. Not part of Unstuck; it only embeds the Bridge.
 _Avoid_: bot, client
 
 **Customer**:
@@ -17,7 +17,7 @@ The human who remotely operates an Agent's browser to clear a challenge.
 _Avoid_: user, worker, operator
 
 **Deposit**:
-USDC sent from a Customer's registered wallet to the Overpass service wallet, credited to that Customer's Balance.
+USDC sent from a Customer's registered wallet to the Unstuck service wallet, credited to that Customer's Balance.
 _Avoid_: top-up, payment
 
 **Unattributed Deposit**:
@@ -40,11 +40,11 @@ _Avoid_: payout (for the request), cash out
 The wallet whose key the backend holds to pay Withdrawals. Separate from the service wallet, which receives Deposits and whose key stays in MetaMask.
 
 **Fee**:
-Overpass's share (20%) of a captured Hold.
+Unstuck's share (20%) of a captured Hold.
 _Avoid_: commission, cut
 
 **Balance**:
-The Customer's funds held by Overpass; split into available and held.
+The Customer's funds held by Unstuck; split into available and held.
 _Avoid_: wallet, credit
 
 **Hold**:
@@ -92,5 +92,5 @@ Task outcome where a claimed Task was not Solved within the solve window, the So
 _Avoid_: timed out, rejected
 
 **Bridge**:
-The Overpass TypeScript SDK running inside the Agent's process. It hands the blocked browser page to Overpass and returns once the page is unblocked.
+The Unstuck TypeScript SDK running inside the Agent's process. It hands the blocked browser page to Unstuck and returns once the page is unblocked.
 _Avoid_: SDK, client, plugin

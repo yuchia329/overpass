@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/api"
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/api"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 const (

@@ -4,9 +4,9 @@
 // checkbox and clears any image grid by clicking; the Agent then
 // submits the form.
 //
-//   OVERPASS_API_KEY=... npm run demo:recaptcha
+//   UNSTUCK_API_KEY=... npm run demo:recaptcha
 //
-// Set OVERPASS_URL if the backend is not on http://localhost:8080.
+// Set UNSTUCK_URL if the backend is not on http://localhost:8080.
 
 import { chromium } from "playwright";
 
@@ -21,7 +21,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 480, height: 720 } });
   await page.goto(DEMO_URL);
   await page.frameLocator('iframe[title="reCAPTCHA"]').locator("#recaptcha-anchor").waitFor();
-  console.log("Agent: blocked by reCAPTCHA; asking Overpass for a human.");
+  console.log("Agent: blocked by reCAPTCHA; asking Unstuck for a human.");
 
   await solve(page);
 

@@ -1,9 +1,9 @@
 // Demo Agent: opens a local fake Challenge page, gets stuck on it and calls
 // the Bridge. A Solver on the Queue page clears it by clicking the button.
 //
-//   OVERPASS_API_KEY=... npm run demo
+//   UNSTUCK_API_KEY=... npm run demo
 //
-// Set OVERPASS_URL if the backend is not on http://localhost:8080.
+// Set UNSTUCK_URL if the backend is not on http://localhost:8080.
 
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -21,7 +21,7 @@ const browser = await chromium.launch({ headless: process.env.HEADLESS === "1" }
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto(`http://127.0.0.1:${port}/challenge`);
-  console.log("Agent: blocked by a Challenge; asking Overpass for a human.");
+  console.log("Agent: blocked by a Challenge; asking Unstuck for a human.");
 
   await solve(page, {
     cleared: (p) => p.evaluate(() => document.body.dataset.cleared === "true"),

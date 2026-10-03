@@ -3,18 +3,18 @@
 // attempts the demo pauses it and hands the same browser tab to a human
 // Solver through the Bridge, then tells the agent to carry on.
 //
-//   ANTHROPIC_API_KEY=... OVERPASS_API_KEY=... \
+//   ANTHROPIC_API_KEY=... UNSTUCK_API_KEY=... \
 //   AGENT_URL=https://example.com AGENT_TASK="..." npm run demo:stagehand
 //
 // Playwright launches Chromium with a CDP port and Stagehand attaches to it,
 // so solve() gets a Playwright page for the very tab the agent drives.
-// Set AGENT_MODEL to change the model, OVERPASS_URL for another backend.
+// Set AGENT_MODEL to change the model, UNSTUCK_URL for another backend.
 
 import { Stagehand } from "@browserbasehq/stagehand";
 import type { LanguageModelMiddleware } from "ai";
 import { chromium, type Page } from "playwright";
 
-import { OverpassError, solve } from "../src/index.ts";
+import { UnstuckError, solve } from "../src/index.ts";
 import { balance, captchaCleared, hasCaptchaToken, say } from "./common.ts";
 
 const START_URL = process.env.AGENT_URL ?? "https://www.google.com/recaptcha/api2/demo";
@@ -29,7 +29,7 @@ const CDP_PORT = 9333;
 
 // The agent tries a reCAPTCHA image challenge itself; after MAX_ATTEMPTS
 // submits (Verify, Next or Skip) without a token, the demo pauses it and hands
-// the tab to a human through Overpass. Code counts the attempts: a model
+// the tab to a human through Unstuck. Code counts the attempts: a model
 // asked to count its own failures stops counting.
 const MAX_ATTEMPTS = 3;
 
@@ -51,7 +51,7 @@ const PLAN = `Do this in order:
 2. Pass the human check.
 3. Submit the search and read the result.`;
 
-const HUMAN_PASSED = `A human has passed the CAPTCHA for you through Overpass. It is done,
+const HUMAN_PASSED = `A human has passed the CAPTCHA for you through Unstuck. It is done,
 even if it does not look ticked. Do not click the CAPTCHA checkbox or challenge
 again. Continue with the task now: submit the search and report the result.`;
 
@@ -81,18 +81,18 @@ async function recaptchaState(page: Page): Promise<string> {
 async function challengeSubmits(page: Page): Promise<number | undefined> {
   const frame = page.frames().find((f) => /\/recaptcha\/(api2|enterprise)\/bframe/.test(f.url()));
   return frame?.evaluate(() => {
-    const w = window as { __overpassSubmits?: number };
-    if (w.__overpassSubmits === undefined) {
-      w.__overpassSubmits = 0;
+    const w = window as { __unstuckSubmits?: number };
+    if (w.__unstuckSubmits === undefined) {
+      w.__unstuckSubmits = 0;
       document.addEventListener(
         "click",
         (e) => {
-          if ((e.target as Element | null)?.closest?.("#recaptcha-verify-button")) w.__overpassSubmits!++;
+          if ((e.target as Element | null)?.closest?.("#recaptcha-verify-button")) w.__unstuckSubmits!++;
         },
         true,
       );
     }
-    return w.__overpassSubmits;
+    return w.__unstuckSubmits;
   });
 }
 
@@ -170,7 +170,7 @@ const stagehand = new Stagehand({
 try {
   await stagehand.init();
   await page.goto(START_URL);
-  say("Overpass", `Balance ${await balance()}.`);
+  say("Unstuck", `Balance ${await balance()}.`);
   say("User", TASK);
 
   let steps = 0;
@@ -181,7 +181,7 @@ try {
   // Hands the tab to a human and waits until the check is passed. Returns the
   // message for the agent.
   async function handToHuman(): Promise<string> {
-    say("Agent", `Still blocked after ${attempts} attempts. Hiring a human through Overpass for 0.01 USDC.`);
+    say("Agent", `Still blocked after ${attempts} attempts. Hiring a human through Unstuck for 0.01 USDC.`);
     const started = Date.now();
     const waiting = setInterval(async () => {
       const token = await hasCaptchaToken(page).catch((err: Error) => `error: ${err.message}`);
@@ -192,13 +192,13 @@ try {
     try {
       await solve(page, { cleared: captchaCleared(page.url()) });
     } catch (err) {
-      if (!(err instanceof OverpassError)) throw err;
-      say("Overpass", err.message);
+      if (!(err instanceof UnstuckError)) throw err;
+      say("Unstuck", err.message);
       return `Human help failed (${err.message}). Stop and report that the CAPTCHA blocked you.`;
     } finally {
       clearInterval(waiting);
     }
-    say("Overpass", `A human cleared the check. Balance ${await balance()}. The agent takes over again.`);
+    say("Unstuck", `A human cleared the check. Balance ${await balance()}. The agent takes over again.`);
     return HUMAN_PASSED;
   }
 

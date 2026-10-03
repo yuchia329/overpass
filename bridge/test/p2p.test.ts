@@ -1,4 +1,4 @@
-// Drives solve() against a fake Overpass backend and a real headless
+// Drives solve() against a fake Unstuck backend and a real headless
 // Chromium, with the Solver connected directly over WebRTC.
 
 import assert from "node:assert/strict";
@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { chromium, type Browser, type Page } from "playwright";
 
 import { solve, TaskFailedError, type SolveOptions } from "../src/index.ts";
-import { type Bridge, fakeOverpass } from "./fake-overpass.ts";
+import { type Bridge, fakeUnstuck } from "./fake-unstuck.ts";
 import { connectPeer, type SolverPeer } from "./solver-peer.ts";
 
 const TOKEN = "pt_session";
@@ -105,12 +105,12 @@ async function session(
 ) {
   const page = await browser.newPage({ viewport: { width: 400, height: 300 } });
   await page.setContent(PAGE);
-  const overpass = await fakeOverpass();
-  const solving = solve(page, { ...options, cleared, apiKey: "key", url: overpass.url });
+  const unstuck = await fakeUnstuck();
+  const solving = solve(page, { ...options, cleared, apiKey: "key", url: unstuck.url });
   solving.catch(() => {}); // the test awaits it
   const peers: SolverPeer[] = [];
   try {
-    const bridge = await overpass.bridge;
+    const bridge = await unstuck.bridge;
     bridge.send({
       type: "claimed",
       solve_deadline: new Date(Date.now() + 60_000).toISOString(),
@@ -125,7 +125,7 @@ async function session(
     await solver({ page, bridge, solving, connect });
   } finally {
     for (const peer of peers) peer.close();
-    await overpass.close();
+    await unstuck.close();
     await page.close();
   }
 }

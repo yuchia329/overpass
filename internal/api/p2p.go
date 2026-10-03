@@ -27,7 +27,7 @@ func (s *Server) iceServers() []map[string]any {
 		servers = append(servers, map[string]any{"urls": s.cfg.STUNURLs})
 	}
 	if len(s.cfg.TURNURLs) > 0 {
-		username := fmt.Sprintf("%d:overpass", time.Now().Add(s.cfg.SolveWindow+turnGrace).Unix())
+		username := fmt.Sprintf("%d:unstuck", time.Now().Add(s.cfg.SolveWindow+turnGrace).Unix())
 		mac := hmac.New(sha1.New, []byte(s.cfg.TURNSecret))
 		mac.Write([]byte(username))
 		servers = append(servers, map[string]any{

@@ -38,7 +38,7 @@ let werift: Promise<Werift | undefined> | undefined;
 
 function loadWebRTC() {
   werift ??= import("werift").catch((err: Error) => {
-    console.warn(`Overpass: WebRTC unavailable (${err.message}); Sessions stay relayed.`);
+    console.warn(`Unstuck: WebRTC unavailable (${err.message}); Sessions stay relayed.`);
     return undefined;
   });
   return werift;
@@ -78,7 +78,7 @@ export class Peer {
       await pc.setLocalDescription(await pc.createAnswer());
       return this.#closed ? undefined : pc.localDescription?.sdp;
     } catch (err) {
-      console.warn("Overpass: answering the Solver's offer:", err);
+      console.warn("Unstuck: answering the Solver's offer:", err);
       this.close();
       return undefined;
     }

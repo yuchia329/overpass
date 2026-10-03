@@ -1,4 +1,4 @@
-// Command overpass-register registers a Customer by signing the registration
+// Command unstuck-register registers a Customer by signing the registration
 // challenge with a Solana keypair file, for wallets (like pay.sh accounts) that
 // cannot sign messages themselves. It prints the API key.
 //
@@ -16,11 +16,11 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 func main() {
-	server := flag.String("server", "http://localhost:8080", "Overpass backend URL")
+	server := flag.String("server", "http://localhost:8080", "Unstuck backend URL")
 	keypairPath := flag.String("keypair", "", "Solana keypair JSON file (64-byte array)")
 	flag.Parse()
 	if *keypairPath == "" {

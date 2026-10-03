@@ -1,4 +1,4 @@
-// Package api serves the Overpass HTTP API.
+// Package api serves the Unstuck HTTP API.
 package api
 
 import (
@@ -19,16 +19,16 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/yuchia329/overpass/internal/customer"
-	"github.com/yuchia329/overpass/internal/deposit"
-	"github.com/yuchia329/overpass/internal/ledger"
-	"github.com/yuchia329/overpass/internal/payout"
-	"github.com/yuchia329/overpass/internal/queue"
-	"github.com/yuchia329/overpass/internal/session"
-	"github.com/yuchia329/overpass/internal/solana"
-	"github.com/yuchia329/overpass/internal/store"
-	"github.com/yuchia329/overpass/internal/task"
-	"github.com/yuchia329/overpass/internal/web"
+	"github.com/yuchia329/unstuck/internal/customer"
+	"github.com/yuchia329/unstuck/internal/deposit"
+	"github.com/yuchia329/unstuck/internal/ledger"
+	"github.com/yuchia329/unstuck/internal/payout"
+	"github.com/yuchia329/unstuck/internal/queue"
+	"github.com/yuchia329/unstuck/internal/session"
+	"github.com/yuchia329/unstuck/internal/solana"
+	"github.com/yuchia329/unstuck/internal/store"
+	"github.com/yuchia329/unstuck/internal/task"
+	"github.com/yuchia329/unstuck/internal/web"
 )
 
 const (

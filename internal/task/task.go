@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/ledger"
-	"github.com/yuchia329/overpass/internal/secret"
+	"github.com/yuchia329/unstuck/internal/ledger"
+	"github.com/yuchia329/unstuck/internal/secret"
 )
 
 // Schema is the Task lifecycle's part of the database schema.

@@ -41,7 +41,7 @@ type DBTX interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// Balance is a Customer's funds held by Overpass.
+// Balance is a Customer's funds held by Unstuck.
 type Balance struct {
 	Available int64
 	Held      int64

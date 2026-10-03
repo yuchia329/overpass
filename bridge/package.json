@@ -1,7 +1,7 @@
 {
-  "name": "@overpass/bridge",
+  "name": "@unstuck/bridge",
   "version": "0.1.0",
-  "description": "Overpass Bridge: hand a blocked Playwright page to a human Solver.",
+  "description": "Unstuck Bridge: hand a blocked Playwright page to a human Solver.",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {

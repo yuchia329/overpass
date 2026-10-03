@@ -1,4 +1,4 @@
-// A fake Overpass backend that accepts one Task and hands the test its
+// A fake Unstuck backend that accepts one Task and hands the test its
 // Bridge socket, so a test can play the backend's and the Solver's side.
 
 import { createServer } from "node:http";
@@ -15,9 +15,9 @@ export type Bridge = {
   count(type: string): number;
 };
 
-// fakeOverpass accepts one Task and hands the test its Bridge socket and
+// fakeUnstuck accepts one Task and hands the test its Bridge socket and
 // the body the Task was created with.
-export async function fakeOverpass() {
+export async function fakeUnstuck() {
   let created!: (body: Record<string, unknown>) => void;
   const task = new Promise<Record<string, unknown>>((resolve) => (created = resolve));
   const server = createServer(async (req, res) => {

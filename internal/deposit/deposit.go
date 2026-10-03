@@ -18,8 +18,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/ledger"
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/ledger"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 // Schema is the Deposits module's part of the database schema.

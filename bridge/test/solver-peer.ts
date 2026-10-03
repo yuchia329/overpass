@@ -4,7 +4,7 @@
 
 import { RTCPeerConnection } from "werift";
 
-import type { Bridge } from "./fake-overpass.ts";
+import type { Bridge } from "./fake-unstuck.ts";
 
 export type SolverPeer = {
   send(msg: object): void;
@@ -19,7 +19,7 @@ export type SolverPeer = {
 
 export async function connectPeer(bridge: Bridge, token: string, answerMs = 5_000): Promise<SolverPeer> {
   const pc = new RTCPeerConnection({ iceServers: [] });
-  const channel = pc.createDataChannel("overpass");
+  const channel = pc.createDataChannel("unstuck");
   // As the Queue page does: the channel's close reaches the Bridge, the
   // connection's does not.
   const close = () => {

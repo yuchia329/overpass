@@ -3,7 +3,7 @@ package solana_test
 import (
 	"testing"
 
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 // Token accounts observed on mainnet, each created by the Associated Token Account program.

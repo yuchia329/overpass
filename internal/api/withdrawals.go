@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/payout"
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/payout"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 // handleEarnings shows a Solver's available Earnings and recent Withdrawals.

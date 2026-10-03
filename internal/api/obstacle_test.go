@@ -8,7 +8,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/yuchia329/overpass/internal/api"
+	"github.com/yuchia329/unstuck/internal/api"
 )
 
 const obstacle = "Pass the reCAPTCHA check below the search form."

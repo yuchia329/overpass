@@ -23,7 +23,7 @@ let retry = 0;
 // into a Solana wallet app.
 const DEMO_WALLET = $("demo-wallet-address").textContent;
 $("wallet").value = DEMO_WALLET;
-try { $("wallet").value = localStorage.getItem("overpass.wallet") || DEMO_WALLET; } catch {}
+try { $("wallet").value = localStorage.getItem("unstuck.wallet") || DEMO_WALLET; } catch {}
 
 $("copy-demo-wallet").addEventListener("click", async () => {
   const button = $("copy-demo-wallet");
@@ -45,14 +45,14 @@ $("connect").addEventListener("submit", (e) => {
     return;
   }
   notice("");
-  try { localStorage.setItem("overpass.wallet", wallet); } catch {}
+  try { localStorage.setItem("unstuck.wallet", wallet); } catch {}
   retry = 0;
   connect();
 });
 
-try { $("direct").checked = localStorage.getItem("overpass.direct") !== "off"; } catch {}
+try { $("direct").checked = localStorage.getItem("unstuck.direct") !== "off"; } catch {}
 $("direct").addEventListener("change", () => {
-  try { localStorage.setItem("overpass.direct", $("direct").checked ? "on" : "off"); } catch {}
+  try { localStorage.setItem("unstuck.direct", $("direct").checked ? "on" : "off"); } catch {}
   if (!$("direct").checked) closePeer();
   else if (claim && !peer) startPeer();
   renderLink();
@@ -428,7 +428,7 @@ function startPeer() {
   closePeer();
   if (!claim || !$("direct").checked || typeof RTCPeerConnection === "undefined") return;
   const pc = new RTCPeerConnection({ iceServers: claim.iceServers });
-  const channel = pc.createDataChannel("overpass");
+  const channel = pc.createDataChannel("unstuck");
   channel.binaryType = "arraybuffer";
   const p = { taskId: claim.id, pc, channel, token: null, ready: false, frame: null, timer: 0 };
   peer = p;
@@ -507,8 +507,8 @@ function renderLink() {
   let text = "";
   if (claim && peer && peer.ready) text = "Direct connection. The Agent can see your IP address.";
   else if (claim && peer) text = "Connecting directly. The Agent can see your IP address.";
-  else if (claim && exposed.has(claim.id)) text = "Relayed through Overpass. The Agent may have seen your IP address while connecting directly.";
-  else if (claim) text = "Relayed through Overpass. The Agent cannot see your IP address.";
+  else if (claim && exposed.has(claim.id)) text = "Relayed through Unstuck. The Agent may have seen your IP address while connecting directly.";
+  else if (claim) text = "Relayed through Unstuck. The Agent cannot see your IP address.";
   $("link").textContent = text;
 }
 

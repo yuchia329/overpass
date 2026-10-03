@@ -10,8 +10,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/yuchia329/overpass/internal/session"
-	"github.com/yuchia329/overpass/internal/task"
+	"github.com/yuchia329/unstuck/internal/session"
+	"github.com/yuchia329/unstuck/internal/task"
 )
 
 // maxBridgeMessage bounds one message from the Bridge; a JPEG frame of a

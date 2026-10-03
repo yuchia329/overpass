@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yuchia329/overpass/internal/api"
-	"github.com/yuchia329/overpass/internal/solana"
+	"github.com/yuchia329/unstuck/internal/api"
+	"github.com/yuchia329/unstuck/internal/solana"
 )
 
 // The recorded fixture is the first real Deposit: `pay send 1` from the demo
@@ -337,7 +337,7 @@ func TestPollerSurvivesRPCErrors(t *testing.T) {
 
 func TestPollIntervalMustBePositiveWithRPCURL(t *testing.T) {
 	_, err := api.New(api.Config{
-		DBPath:        filepath.Join(t.TempDir(), "overpass.db"),
+		DBPath:        filepath.Join(t.TempDir(), "unstuck.db"),
 		ClaimWindow:   time.Second,
 		SolveWindow:   time.Second,
 		Price:         testPrice,
