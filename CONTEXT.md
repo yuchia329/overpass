@@ -32,6 +32,13 @@ _Avoid_: fee, cost
 The Solver's share (80%) of a captured Hold.
 _Avoid_: payout, reward
 
+**Withdrawal**:
+A Solver taking all their available Earnings, paid in USDC from the hot wallet to the wallet that earned them, after signing a withdrawal challenge. Ends confirmed or failed; a failed one's Earnings are available again.
+_Avoid_: payout (for the request), cash out
+
+**Hot wallet**:
+The wallet whose key the backend holds to pay Withdrawals. Separate from the service wallet, which receives Deposits and whose key stays in MetaMask.
+
 **Fee**:
 Overpass's share (20%) of a captured Hold.
 _Avoid_: commission, cut

@@ -43,6 +43,12 @@
   #claimed-obstacle { font-weight: 600; margin-top: 8px; }
   #claimed-scope { color: var(--muted); font-size: 14px; margin: 2px 0 0; }
   #claimed .actions { display: flex; gap: 8px; }
+  #use-wallet { margin: 8px 0 0; padding: 6px 12px; font-size: 14px; }
+  #earnings { padding: 12px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 16px; }
+  #earnings .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #earnings-note { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
+  #withdrawals li { display: block; padding: 6px 0; font-size: 14px; border-bottom: 0; }
+  #withdrawals a { color: inherit; }
   .waited, .empty { color: var(--muted); font-size: 14px; }
   [hidden] { display: none !important; }
 </style>
@@ -54,10 +60,19 @@
     <input id="wallet" placeholder="Your Solana wallet address" autocomplete="off" spellcheck="false" required>
     <button>Connect</button>
   </form>
+  <button type="button" id="use-wallet">Use my MetaMask wallet</button>
   <p id="demo-wallet">Demo wallet: <code id="demo-wallet-address">C6YuPpdFMxCKxHkkcxtWGmq6okwtq6m1UMtwKGDXEHsm</code> <button type="button" id="copy-demo-wallet">Copy</button></p>
   <label id="direct-pref"><input type="checkbox" id="direct" checked> Connect directly to the Agent when possible. It is faster, but the Agent sees your IP address.</label>
   <p id="status">Not connected.</p>
   <div id="notice" hidden></div>
+  <section id="earnings" hidden>
+    <div class="row">
+      <span>Earnings: <strong id="earnings-available">0</strong> USDC available</span>
+      <button id="withdraw" disabled>Withdraw</button>
+    </div>
+    <p id="earnings-note"></p>
+    <ul id="withdrawals"></ul>
+  </section>
   <section id="claimed" hidden>
     <div>Claimed: <span class="url" id="claimed-url"></span></div>
     <div id="claimed-obstacle"></div>

@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"flag"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yuchia329/overpass/internal/api"
+	"github.com/yuchia329/overpass/internal/solana"
 )
 
 func main() {
@@ -31,9 +33,20 @@ func main() {
 	flag.DurationVar(&cfg.PingInterval, "ping-interval", 20*time.Second, "how often to ping Bridge and Queue sockets so proxies keep them open (0 disables)")
 	stun := flag.String("stun", "stun:stun.l.google.com:19302", "comma-separated STUN URLs for direct Bridge-to-Solver connections (empty for none)")
 	turn := flag.String("turn", "", "comma-separated TURN URLs, e.g. turn:host:3478; needs $OVERPASS_TURN_SECRET, coturn's static-auth-secret")
+	payoutKeypair := flag.String("payout-keypair", "", "Solana keypair file of the hot wallet that pays Solvers' Withdrawals (empty disables Withdrawals)")
+	flag.StringVar(&cfg.USDCMint, "usdc-mint", solana.USDCMint, "USDC mint that Withdrawals pay in")
+	flag.Int64Var(&cfg.MinWithdrawal, "min-withdrawal", 100_000, "least USDC base units a Solver receives per Withdrawal (100000 = 0.10 USDC)")
+	flag.Int64Var(&cfg.AccountFee, "account-fee", 400_000, "USDC base units kept back from a Withdrawal to a wallet with no USDC token account, for its rent")
 	flag.Parse()
 	cfg.STUNURLs, cfg.TURNURLs = urlList(*stun), urlList(*turn)
 	cfg.TURNSecret = os.Getenv("OVERPASS_TURN_SECRET")
+	if *payoutKeypair != "" {
+		key, err := solana.ReadKeypair(*payoutKeypair)
+		if err != nil {
+			log.Fatal(err)
+		}
+		cfg.PayoutKey, cfg.PayoutRPCURL = key, cfg.RPCURL
+	}
 
 	srv, err := api.New(cfg)
 	if err != nil {
@@ -54,6 +67,10 @@ func main() {
 
 	log.Printf("overpass listening on %s (claim %v, solve %v, price %d, dev %v, stun %v, turn %v)",
 		*addr, cfg.ClaimWindow, cfg.SolveWindow, cfg.Price, cfg.DevMode, cfg.STUNURLs, cfg.TURNURLs)
+	if cfg.PayoutKey != nil {
+		log.Printf("withdrawals paid from hot wallet %s in mint %s (minimum %d, account fee %d)",
+			solana.EncodeBase58(cfg.PayoutKey.Public().(ed25519.PublicKey)), cfg.USDCMint, cfg.MinWithdrawal, cfg.AccountFee)
+	}
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

@@ -238,7 +238,7 @@ function connect() {
   const ws = new WebSocket(`${scheme}://${location.host}/v1/queue?wallet=${encodeURIComponent(wallet)}`);
   socket = ws;
   status("Connecting…");
-  ws.onopen = () => { retry = 0; status(`Connected as ${short(wallet)}.`); };
+  ws.onopen = () => { retry = 0; status(`Connected as ${short(wallet)}.`); loadEarnings(); };
   ws.onmessage = (e) => handle(JSON.parse(e.data));
   ws.onclose = () => {
     if (socket !== ws) return; // replaced by a newer connection
@@ -303,6 +303,7 @@ function handle(m) {
     case "task_solved":
       if (claim && claim.id === m.task_id) claim = null;
       notice(`Solved! Earning of ${usdc(m.earning)} USDC recorded.`);
+      loadEarnings();
       break;
     case "rtc_answer":
       if (peer && peer.taskId === m.task_id && !peer.token) {
@@ -521,3 +522,150 @@ function notice(text) {
 }
 
 function short(addr) { return addr.length > 12 ? `${addr.slice(0, 4)}…${addr.slice(-4)}` : addr; }
+
+// Earnings and Withdrawals. A Solver withdraws all their available Earnings
+// to their own wallet, proving they own it by signing a challenge with a
+// Solana wallet such as MetaMask. Wallets are found through the Wallet
+// Standard, which MetaMask, Phantom and others implement.
+const solanaWallets = [];
+{
+  const register = (...ws) => {
+    solanaWallets.push(...ws);
+    return () => {};
+  };
+  addEventListener("wallet-standard:register-wallet", ({ detail }) => detail({ register }));
+  dispatchEvent(new CustomEvent("wallet-standard:app-ready", { detail: { register } }));
+}
+
+// solanaWallet is the wallet to sign with: MetaMask when it is installed.
+function solanaWallet() {
+  const usable = solanaWallets.filter((w) => w.features["standard:connect"] && w.features["solana:signMessage"]);
+  return usable.find((w) => /metamask/i.test(w.name)) || usable[0] || null;
+}
+
+async function walletAccount() {
+  const w = solanaWallet();
+  if (!w) throw new Error("No Solana wallet found. Install MetaMask, or on a phone open this page in MetaMask's browser.");
+  const { accounts } = await w.features["standard:connect"].connect();
+  const account = accounts.find((a) => a.chains?.some((c) => c.startsWith("solana:"))) || accounts[0];
+  if (!account) throw new Error(`${w.name} shared no Solana account.`);
+  return { w, account };
+}
+
+$("use-wallet").addEventListener("click", async () => {
+  try {
+    const { account } = await walletAccount();
+    $("wallet").value = account.address;
+    $("connect").requestSubmit();
+  } catch (err) {
+    notice(err.message);
+  }
+});
+
+let earnings = null; // { available, minimum, account_fee, withdrawals_enabled, withdrawals }
+let earningsTimer = 0;
+let withdrawing = false;
+
+const isOpen = (w) => w.state === "pending" || w.state === "sent";
+
+async function loadEarnings() {
+  clearTimeout(earningsTimer);
+  if (!wallet) return;
+  const asked = wallet;
+  try {
+    const res = await fetch(`/v1/solvers/${encodeURIComponent(asked)}/earnings`);
+    if (res.ok && asked === wallet) earnings = await res.json();
+  } catch {}
+  renderEarnings();
+  // A Withdrawal on its way is checked often; otherwise Earnings refresh slowly.
+  earningsTimer = setTimeout(loadEarnings, earnings?.withdrawals.some(isOpen) ? 2000 : 30000);
+}
+
+function renderEarnings() {
+  $("earnings").hidden = !earnings;
+  if (!earnings) return;
+  const open = earnings.withdrawals.some(isOpen);
+  const enough = earnings.available >= earnings.minimum;
+  $("earnings-available").textContent = usdc(earnings.available);
+  $("withdraw").disabled = !earnings.withdrawals_enabled || open || !enough || withdrawing;
+  let note = `Withdraws all of it to ${short(wallet)}. If that wallet has never held USDC, ` +
+    `${usdc(earnings.account_fee)} USDC is kept back to open its USDC account.`;
+  if (!earnings.withdrawals_enabled) note = "Withdrawals are not open yet.";
+  else if (open) note = "A withdrawal is on its way.";
+  else if (!enough) note = `You can withdraw once you have ${usdc(earnings.minimum)} USDC.`;
+  $("earnings-note").textContent = note;
+  $("withdrawals").replaceChildren(...earnings.withdrawals.map((w) => {
+    const li = document.createElement("li");
+    const label = {
+      pending: "preparing",
+      sent: "sending",
+      confirmed: "paid",
+      failed: `failed${w.error ? ` (${w.error})` : ""}; the Earnings are available again`,
+    }[w.state];
+    li.textContent = `${new Date(w.created_at).toLocaleString()}: ${usdc(w.payout)} USDC ${label}. `;
+    if (w.signature) {
+      const a = document.createElement("a");
+      a.href = `https://solscan.io/tx/${w.signature}`;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "Transaction";
+      li.append(a);
+    }
+    return li;
+  }));
+}
+
+$("withdraw").addEventListener("click", async () => {
+  withdrawing = true;
+  renderEarnings();
+  try {
+    const { w, account } = await walletAccount();
+    if (account.address !== wallet) {
+      throw new Error(`${w.name} is on ${short(account.address)}, but you are connected as ${short(wallet)}. ` +
+        "Switch accounts in the wallet, or tap \"Use my MetaMask wallet\".");
+    }
+    const challenge = await postJSON("/v1/withdrawals/challenge", { wallet });
+    notice(`Sign the withdrawal message in ${w.name}.`);
+    const [signed] = await w.features["solana:signMessage"].signMessage({
+      account,
+      message: new TextEncoder().encode(challenge.message),
+    });
+    const res = await postJSON("/v1/withdrawals", { wallet, nonce: challenge.nonce, signature: base58(signed.signature) });
+    notice(`Withdrawal of ${usdc(res.payout)} USDC is on its way.`);
+  } catch (err) {
+    notice(err.message);
+  }
+  withdrawing = false;
+  loadEarnings();
+});
+
+// postJSON posts body and returns the JSON reply, or throws with a message
+// for the Solver.
+async function postJSON(path, body) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const out = await res.json().catch(() => ({}));
+  if (res.ok) return out;
+  throw new Error({
+    below_minimum: `You need ${usdc(out.minimum + out.account_fee)} USDC to withdraw` +
+      (out.account_fee ? `: your wallet has no USDC account yet, and ${usdc(out.account_fee)} USDC opens one.` : "."),
+    withdrawal_open: "A withdrawal is already on its way.",
+    invalid_proof: "The signature did not match. Try again.",
+    withdrawals_disabled: "Withdrawals are not open yet.",
+  }[out.error] || `Withdrawal failed (${out.error || res.status}).`);
+}
+
+function base58(bytes) {
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let n = 0n;
+  for (const b of bytes) n = n * 256n + BigInt(b);
+  let out = "";
+  while (n > 0n) {
+    out = alphabet[Number(n % 58n)] + out;
+    n /= 58n;
+  }
+  for (const b of bytes) {
+    if (b !== 0) break;
+    out = "1" + out;
+  }
+  return out;
+}

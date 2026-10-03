@@ -125,6 +125,8 @@ flowchart LR
     H -- Solved --> E[Solver Earning 0.008]
     H -- Solved --> F[Overpass Fee 0.002]
     H -- "Expired / Failed" --> BAL
+    E -- "Withdrawal (Solver signs in MetaMask)" --> HW[Hot wallet]
+    HW -- "USDC on Solana" --> SOL[Solver wallet]
 ```
 
 - **Deposit.** The Customer sends USDC from their registered wallet to the
@@ -136,8 +138,19 @@ flowchart LR
 - **Registration.** The Customer proves wallet ownership by signing a
   single-use challenge (ed25519). Registering again issues a new API key and
   revokes the old one.
-- Solver payouts are manual for now. The backend records each Earning
-  against the Solver's wallet.
+- **Withdrawal.** The Queue page shows the Solver's available Earnings. The
+  Solver taps Withdraw and signs a single-use withdrawal challenge in
+  MetaMask (any Solana wallet works), and the backend sends all of it, in
+  one transaction, from a hot wallet it holds to that same wallet. The
+  minimum is 0.10 USDC. If the wallet has never held USDC, the transaction
+  also opens its USDC account, and 0.40 USDC is kept back for that account's
+  rent, which the hot wallet pays in SOL.
+- **Hot wallet.** A separate wallet whose key the backend holds, so keep
+  only a small float in it. Top it up with USDC from the service wallet and
+  with a little SOL for fees. Without `-payout-keypair` Withdrawals are off.
+- A Withdrawal is never paid twice. Its signature is recorded before it is
+  sent, and it fails only when the transaction failed on chain or can no
+  longer land. A failed Withdrawal's Earnings are available again.
 
 ## System architecture
 
@@ -221,6 +234,9 @@ dependency. Without it, Sessions stay relayed.
 | `POST /v1/tasks`                 | API key     | Create a Task (402 if Balance is too low)    |
 | `GET /v1/tasks/{id}/bridge`      | session token | Bridge WebSocket                           |
 | `GET /v1/queue?wallet=...`       | none        | Solver Queue WebSocket                       |
+| `GET /v1/solvers/{wallet}/earnings` | none     | Available Earnings and recent Withdrawals    |
+| `POST /v1/withdrawals/challenge` | none        | Get a withdrawal challenge to sign           |
+| `POST /v1/withdrawals`           | signature   | Withdraw all available Earnings to the wallet |
 | `POST /v1/dev/credit`            | API key     | Free credit, only with `-dev`                |
 | `GET /`                          | none        | Queue page                                   |
 
@@ -477,6 +493,13 @@ to clear the Challenge.
   closes WebSockets idle for 100s, and a still page sends no frames.
 - **Keep Traefik's access log off.** The Bridge's session token is in its
   WebSocket URL.
+- **Withdrawals need the hot wallet's key.** Put the keypair at
+  `/etc/overpass/payout-keypair.json` (owner root, mode 600) and hand it to the
+  service as a systemd credential: add
+  `LoadCredential=payout-keypair:/etc/overpass/payout-keypair.json` and
+  `-payout-keypair ${CREDENTIALS_DIRECTORY}/payout-keypair` to
+  [deploy/overpass.service](deploy/overpass.service). The service runs as a
+  dynamic user, which can read only that copy.
 
 ## Configuration
 
@@ -496,6 +519,10 @@ Flags for `cmd/overpass`:
 | `-stun`           | `stun:stun.l.google.com:19302`        | STUN URLs for direct Sessions (empty for none)       |
 | `-turn`           | none                                  | TURN URLs; needs `$OVERPASS_TURN_SECRET` (coturn `static-auth-secret`) |
 | `-dev`            | off                                   | Turns on `POST /v1/dev/credit`                       |
+| `-payout-keypair` | none                                  | Hot wallet keypair file that pays Withdrawals (none turns them off); uses `-rpc-url` |
+| `-usdc-mint`      | mainnet USDC                          | Mint Withdrawals pay in                              |
+| `-min-withdrawal` | `100000`                              | Least a Solver receives per Withdrawal (0.10 USDC)   |
+| `-account-fee`    | `400000`                              | Kept back when the Solver's wallet has no USDC account (0.40 USDC) |
 
 `solve(page, options)` in the Bridge:
 

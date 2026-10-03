@@ -4,6 +4,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -21,6 +22,7 @@ import (
 	"github.com/yuchia329/overpass/internal/customer"
 	"github.com/yuchia329/overpass/internal/deposit"
 	"github.com/yuchia329/overpass/internal/ledger"
+	"github.com/yuchia329/overpass/internal/payout"
 	"github.com/yuchia329/overpass/internal/queue"
 	"github.com/yuchia329/overpass/internal/session"
 	"github.com/yuchia329/overpass/internal/solana"
@@ -52,6 +54,14 @@ type Config struct {
 	STUNURLs   []string
 	TURNURLs   []string
 	TURNSecret string
+	// PayoutKey is the hot wallet that pays Solvers' Withdrawals; nil
+	// disables Withdrawals. It needs PayoutRPCURL, and USDC and SOL to pay with.
+	PayoutKey          ed25519.PrivateKey
+	PayoutRPCURL       string
+	USDCMint           string        // defaults to mainnet USDC
+	MinWithdrawal      int64         // least a Solver receives per Withdrawal, USDC base units
+	AccountFee         int64         // kept back when the Solver has no USDC token account yet
+	PayoutPollInterval time.Duration // how often sent Withdrawals are checked; defaults to 2s
 }
 
 // Server is the backend: an http.Handler plus the resources behind it.
@@ -63,6 +73,7 @@ type Server struct {
 	queue     *queue.Hub
 	relay     *session.Relay
 	deposits  *deposit.Poller
+	payouts   *payout.Service
 	mux       *http.ServeMux
 }
 
@@ -82,6 +93,18 @@ func (c Config) validate() error {
 		return errors.New("TURN servers need a TURN secret")
 	case c.RPCURL != "" && c.PollInterval <= 0:
 		return fmt.Errorf("poll interval must be positive, got %v", c.PollInterval)
+	case c.PayoutKey == nil:
+		return nil
+	case len(c.PayoutKey) != ed25519.PrivateKeySize:
+		return errors.New("payout key is not an ed25519 keypair")
+	case c.PayoutRPCURL == "":
+		return errors.New("payouts need an RPC URL")
+	case c.USDCMint != "" && !solana.IsPubkey(c.USDCMint):
+		return fmt.Errorf("USDC mint %q is not a Solana public key", c.USDCMint)
+	case c.MinWithdrawal <= 0:
+		return fmt.Errorf("minimum withdrawal must be positive, got %d", c.MinWithdrawal)
+	case c.AccountFee < 0:
+		return fmt.Errorf("account fee must not be negative, got %d", c.AccountFee)
 	}
 	return nil
 }
@@ -90,7 +113,13 @@ func New(cfg Config) (*Server, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
-	db, err := store.Open(cfg.DBPath, customer.Schema, ledger.Schema, task.Schema, deposit.Schema)
+	if cfg.USDCMint == "" {
+		cfg.USDCMint = solana.USDCMint
+	}
+	if cfg.PayoutPollInterval <= 0 {
+		cfg.PayoutPollInterval = 2 * time.Second
+	}
+	db, err := store.Open(cfg.DBPath, customer.Schema, ledger.Schema, task.Schema, deposit.Schema, payout.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +142,15 @@ func New(cfg Config) (*Server, error) {
 			hub.Publish(e)
 			relay.Publish(e)
 		}),
+		payouts: payout.New(db, payout.Config{
+			RPCURL:       cfg.PayoutRPCURL,
+			Key:          cfg.PayoutKey,
+			Mint:         cfg.USDCMint,
+			Minimum:      cfg.MinWithdrawal,
+			AccountFee:   cfg.AccountFee,
+			ChallengeTTL: cfg.ChallengeTTL,
+			PollInterval: cfg.PayoutPollInterval,
+		}),
 		queue: hub,
 		relay: relay,
 		mux:   http.NewServeMux(),
@@ -122,6 +160,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s.deposits.Start()
+	s.payouts.Start()
 	s.mux.HandleFunc("POST /v1/customers/challenge", s.handleChallenge)
 	s.mux.HandleFunc("POST /v1/customers", s.handleRegister)
 	s.mux.HandleFunc("GET /v1/balance", s.auth(s.handleBalance))
@@ -131,6 +170,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	s.mux.HandleFunc("GET /v1/queue", s.handleQueue)
 	s.mux.HandleFunc("GET /v1/tasks/{id}/bridge", s.handleBridge)
+	s.mux.HandleFunc("GET /v1/solvers/{wallet}/earnings", s.handleEarnings)
+	s.mux.HandleFunc("POST /v1/withdrawals/challenge", s.handleWithdrawalChallenge)
+	s.mux.HandleFunc("POST /v1/withdrawals", s.handleWithdraw)
 	if err := s.routeQueuePage(); err != nil {
 		s.Close()
 		return nil, err
@@ -194,6 +236,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.Serve
 
 func (s *Server) Close() error {
 	s.deposits.Close()
+	s.payouts.Close()
 	s.tasks.Close()
 	return s.db.Close()
 }
